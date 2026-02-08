@@ -1,0 +1,48 @@
+# Binaries
+promptops
+nexus
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go build artifacts
+build/
+dist/
+
+# Environment files (contain secrets)
+.env.local
+.env
+*.env
+
+# Runtime state files
+state
+.nexus-state
+.nexus-env
+.promptops-state
+
+# Audit logs (may contain sensitive info)
+*.audit.log
+.nexus-audit.log
+.promptops-audit.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+true
+*.tmp
