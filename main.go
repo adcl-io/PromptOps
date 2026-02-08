@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "2.1.0"
+const version = "2.2.0"
 
 type Backend struct {
 	Name        string
@@ -58,6 +58,78 @@ var backends = map[string]Backend{
 		SonnetModel: "kimi-for-coding",
 		OpusModel:   "kimi-for-coding",
 	},
+	"deepseek": {
+		Name:        "deepseek",
+		DisplayName: "DeepSeek",
+		Provider:    "DeepSeek AI",
+		Models:      "DeepSeek-V3 / DeepSeek-R1",
+		AuthVar:     "DEEPSEEK_API_KEY",
+		BaseURL:     "https://api.deepseek.com/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "deepseek-chat",
+		SonnetModel: "deepseek-reasoner",
+		OpusModel:   "deepseek-reasoner",
+	},
+	"gemini": {
+		Name:        "gemini",
+		DisplayName: "Gemini",
+		Provider:    "Google AI",
+		Models:      "Gemini 2.5 Pro",
+		AuthVar:     "GEMINI_API_KEY",
+		BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
+		Timeout:     "3000000",
+		HaikuModel:  "gemini-2.5-flash",
+		SonnetModel: "gemini-2.5-pro",
+		OpusModel:   "gemini-2.5-pro",
+	},
+	"mistral": {
+		Name:        "mistral",
+		DisplayName: "Mistral",
+		Provider:    "Mistral AI",
+		Models:      "Mistral Large / Codestral",
+		AuthVar:     "MISTRAL_API_KEY",
+		BaseURL:     "https://api.mistral.ai/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "codestral-latest",
+		SonnetModel: "mistral-large-latest",
+		OpusModel:   "mistral-large-latest",
+	},
+	"groq": {
+		Name:        "groq",
+		DisplayName: "Groq",
+		Provider:    "Groq (Llama)",
+		Models:      "Llama 3.3 70B / 405B",
+		AuthVar:     "GROQ_API_KEY",
+		BaseURL:     "https://api.groq.com/openai/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "llama-3.3-70b-versatile",
+		SonnetModel: "llama-3.3-70b-versatile",
+		OpusModel:   "llama-3.1-405b-reasoning",
+	},
+	"together": {
+		Name:        "together",
+		DisplayName: "Together AI",
+		Provider:    "Together AI",
+		Models:      "Llama / Qwen / DeepSeek",
+		AuthVar:     "TOGETHER_API_KEY",
+		BaseURL:     "https://api.together.xyz/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+		SonnetModel: "deepseek-ai/DeepSeek-V3",
+		OpusModel:   "meta-llama/Llama-3.1-405B-Instruct",
+	},
+	"openrouter": {
+		Name:        "openrouter",
+		DisplayName: "OpenRouter",
+		Provider:    "OpenRouter",
+		Models:      "200+ models via meta-router",
+		AuthVar:     "OPENROUTER_API_KEY",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "google/gemini-flash-1.5",
+		SonnetModel: "anthropic/claude-3.5-sonnet",
+		OpusModel:   "anthropic/claude-3-opus",
+	},
 }
 
 type Config struct {
@@ -68,6 +140,12 @@ type Config struct {
 	YoloModeClaude       bool
 	YoloModeZai          bool
 	YoloModeKimi         bool
+	YoloModeDeepseek     bool
+	YoloModeGemini       bool
+	YoloModeMistral      bool
+	YoloModeGroq         bool
+	YoloModeTogether     bool
+	YoloModeOpenrouter   bool
 	DefaultBackend       string
 	VerifyOnSwitch       bool
 	AuditEnabled         bool
@@ -84,7 +162,7 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "claude", "zai", "kimi":
+	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter":
 		switchBackend(cmd, args)
 	case "status", "current":
 		showStatus()
@@ -153,13 +231,25 @@ func loadConfig() *Config {
 				cfg.YoloModeZai = value == "true"
 			case "NEXUS_YOLO_MODE_KIMI":
 				cfg.YoloModeKimi = value == "true"
+			case "NEXUS_YOLO_MODE_DEEPSEEK":
+				cfg.YoloModeDeepseek = value == "true"
+			case "NEXUS_YOLO_MODE_GEMINI":
+				cfg.YoloModeGemini = value == "true"
+			case "NEXUS_YOLO_MODE_MISTRAL":
+				cfg.YoloModeMistral = value == "true"
+			case "NEXUS_YOLO_MODE_GROQ":
+				cfg.YoloModeGroq = value == "true"
+			case "NEXUS_YOLO_MODE_TOGETHER":
+				cfg.YoloModeTogether = value == "true"
+			case "NEXUS_YOLO_MODE_OPENROUTER":
+				cfg.YoloModeOpenrouter = value == "true"
 			case "NEXUS_DEFAULT_BACKEND":
 				cfg.DefaultBackend = value
 			case "NEXUS_VERIFY_ON_SWITCH":
 				cfg.VerifyOnSwitch = value == "true"
 			case "NEXUS_AUDIT_LOG":
 				cfg.AuditEnabled = value == "true"
-			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY":
+			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY":
 				cfg.Keys[key] = value
 			}
 		}
@@ -179,6 +269,18 @@ func (c *Config) getYoloMode(backend string) bool {
 		return c.YoloModeZai
 	case "kimi":
 		return c.YoloModeKimi
+	case "deepseek":
+		return c.YoloModeDeepseek
+	case "gemini":
+		return c.YoloModeGemini
+	case "mistral":
+		return c.YoloModeMistral
+	case "groq":
+		return c.YoloModeGroq
+	case "together":
+		return c.YoloModeTogether
+	case "openrouter":
+		return c.YoloModeOpenrouter
 	}
 	return false
 }
@@ -243,6 +345,48 @@ func printLogo(backend string) {
 		fmt.Println(" ▒██▒ █▄░██░▒██▒   ░██▒░██░")
 		fmt.Println(" ▒ ▒▒ ▓▒░▓  ░ ▒░   ░  ░░▓  ")
 		fmt.Println("  MOONSHOT AI K2.5")
+	case "deepseek":
+		fmt.Println("  ██████   ███████  ███████  ███████  ██   ██ ██   ██")
+		fmt.Println("  ██   ██  ██       ██       ██       ██   ██ ██   ██")
+		fmt.Println("  ██   ██  █████    █████    █████    ███████ ███████")
+		fmt.Println("  ██   ██  ██       ██       ██       ██   ██ ██   ██")
+		fmt.Println("  ██████   ███████  ███████  ███████  ██   ██ ██   ██")
+		fmt.Println("  DEEPSEEK V3/R1")
+	case "gemini":
+		fmt.Println("   ██████   ███████  ███    ███  ██   ██ ██   ██")
+		fmt.Println("  ██        ██       ████  ████  ██   ██ ██   ██")
+		fmt.Println("  ██   ███  █████    ██ ████ ██  ███████ ███████")
+		fmt.Println("  ██    ██  ██       ██  ██  ██  ██   ██ ██   ██")
+		fmt.Println("   ██████   ███████  ██      ██  ██   ██ ██   ██")
+		fmt.Println("  GOOGLE GEMINI 2.5 PRO")
+	case "mistral":
+		fmt.Println("  ███    ███ ██ ███████ ████████ ██████   █████  ██")
+		fmt.Println("  ████  ████ ██ ██         ██    ██   ██ ██   ██ ██")
+		fmt.Println("  ██ ████ ██ ██ █████      ██    ██████  ███████ ██")
+		fmt.Println("  ██  ██  ██ ██ ██         ██    ██   ██ ██   ██ ██")
+		fmt.Println("  ██      ██ ██ ██         ██    ██   ██ ██   ██ ███████")
+		fmt.Println("  MISTRAL LARGE/CODESTRAL")
+	case "groq":
+		fmt.Println("   ██████   ██████   ██████   ███████")
+		fmt.Println("  ██       ██    ██  ██   ██  ██")
+		fmt.Println("  ██   ███ ██    ██  ██████   █████")
+		fmt.Println("  ██    ██ ██    ██  ██   ██  ██")
+		fmt.Println("   ██████   ██████   ██   ██  ███████")
+		fmt.Println("  GROQ - LLAMA 3.3 70B/405B")
+	case "together":
+		fmt.Println("  ████████  ██████   ███████  ████████ ██████   ███████  ██████")
+		fmt.Println("     ██    ██    ██  ██          ██    ██   ██  ██       ██   ██")
+		fmt.Println("     ██    ██    ██  █████       ██    ██████   █████    ██████")
+		fmt.Println("     ██    ██    ██  ██          ██    ██   ██  ██       ██   ██")
+		fmt.Println("     ██     ██████   ███████     ██    ██   ██  ███████  ██   ██")
+		fmt.Println("  TOGETHER AI - LLAMA/QWEN/DEEPSEEK")
+	case "openrouter":
+		fmt.Println("   ██████   ██████  ██   ██ ███████ ████████ ████████ ██████   ███████  ██████")
+		fmt.Println("  ██    ██ ██    ██ ██   ██ ██         ██       ██    ██   ██  ██       ██   ██")
+		fmt.Println("  ██    ██ ██    ██ ███████ █████      ██       ██    ██████   █████    ██████")
+		fmt.Println("  ██    ██ ██    ██ ██   ██ ██         ██       ██    ██   ██  ██       ██   ██")
+		fmt.Println("   ██████   ██████  ██   ██ ███████    ██       ██    ██   ██  ███████  ██   ██")
+		fmt.Println("  OPENROUTER - 200+ MODELS")
 	}
 }
 
@@ -440,6 +584,18 @@ func showStatus() {
 			printLogo("zai")
 		case "kimi":
 			printLogo("kimi")
+		case "deepseek":
+			printLogo("deepseek")
+		case "gemini":
+			printLogo("gemini")
+		case "mistral":
+			printLogo("mistral")
+		case "groq":
+			printLogo("groq")
+		case "together":
+			printLogo("together")
+		case "openrouter":
+			printLogo("openrouter")
 		}
 		fmt.Println()
 		drawBox(fmt.Sprintf("CURRENT: %s BACKEND", strings.ToUpper(current)))
@@ -460,6 +616,23 @@ func showStatus() {
 	fmt.Println()
 	fmt.Println("  * kimi      -> Kimi K2 Thinking / K2 Thinking Turbo")
 	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("kimi"))
+	fmt.Println("  * deepseek  -> DeepSeek V3/R1")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("deepseek"))
+	fmt.Println()
+	fmt.Println("  * gemini    -> Google Gemini 2.5 Pro")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("gemini"))
+	fmt.Println()
+	fmt.Println("  * mistral   -> Mistral Large / Codestral")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("mistral"))
+	fmt.Println()
+	fmt.Println("  * groq      -> Groq Llama 3.3 70B/405B")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("groq"))
+	fmt.Println()
+	fmt.Println("  * together  -> Together AI (Llama/Qwen/DeepSeek)")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("together"))
+	fmt.Println()
+	fmt.Println("  * openrouter-> OpenRouter (200+ models)")
+	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("openrouter"))
 	fmt.Println()
 	fmt.Println("------------------------------------------------------")
 	fmt.Println()
@@ -480,6 +653,36 @@ func showStatus() {
 		fmt.Printf("  [OK] KIMI_API_KEY       %s\n", maskKey(key))
 	} else {
 		fmt.Println("  [MISSING] KIMI_API_KEY")
+	}
+	if key := cfg.Keys["DEEPSEEK_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] DEEPSEEK_API_KEY   %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] DEEPSEEK_API_KEY")
+	}
+	if key := cfg.Keys["GEMINI_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] GEMINI_API_KEY     %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] GEMINI_API_KEY")
+	}
+	if key := cfg.Keys["MISTRAL_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] MISTRAL_API_KEY    %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] MISTRAL_API_KEY")
+	}
+	if key := cfg.Keys["GROQ_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] GROQ_API_KEY       %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] GROQ_API_KEY")
+	}
+	if key := cfg.Keys["TOGETHER_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] TOGETHER_API_KEY   %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] TOGETHER_API_KEY")
+	}
+	if key := cfg.Keys["OPENROUTER_API_KEY"]; key != "" {
+		fmt.Printf("  [OK] OPENROUTER_API_KEY %s\n", maskKey(key))
+	} else {
+		fmt.Println("  [MISSING] OPENROUTER_API_KEY")
 	}
 
 	fmt.Println()
@@ -516,6 +719,12 @@ func initEnv() {
 NEXUS_YOLO_MODE_CLAUDE=false
 NEXUS_YOLO_MODE_ZAI=false
 NEXUS_YOLO_MODE_KIMI=false
+NEXUS_YOLO_MODE_DEEPSEEK=false
+NEXUS_YOLO_MODE_GEMINI=false
+NEXUS_YOLO_MODE_MISTRAL=false
+NEXUS_YOLO_MODE_GROQ=false
+NEXUS_YOLO_MODE_TOGETHER=false
+NEXUS_YOLO_MODE_OPENROUTER=false
 
 # Global YOLO mode - overrides all backends when true
 NEXUS_YOLO_MODE=false
@@ -526,7 +735,7 @@ NEXUS_YOLO_MODE=false
 # Enable audit logging (logs all backend switches to .promptops-audit.log)
 NEXUS_AUDIT_LOG=true
 
-# Default backend when none specified (claude|zai|kimi)
+# Default backend when none specified (claude|zai|kimi|deepseek|gemini|mistral|groq|together|openrouter)
 NEXUS_DEFAULT_BACKEND=claude
 
 # Verify API keys on switch (true|false)
@@ -547,6 +756,30 @@ ZAI_API_KEY=
 # Kimi (Moonshot AI) API Key
 # Get your API key from: https://platform.moonshot.cn/
 KIMI_API_KEY=
+
+# DeepSeek API Key
+# Get your API key from: https://platform.deepseek.com/
+DEEPSEEK_API_KEY=
+
+# Google Gemini API Key
+# Get your API key from: https://ai.google.dev/
+GEMINI_API_KEY=
+
+# Mistral API Key
+# Get your API key from: https://console.mistral.ai/
+MISTRAL_API_KEY=
+
+# Groq API Key
+# Get your API key from: https://console.groq.com/
+GROQ_API_KEY=
+
+# Together AI API Key
+# Get your API key from: https://api.together.xyz/
+TOGETHER_API_KEY=
+
+# OpenRouter API Key
+# Get your API key from: https://openrouter.ai/
+OPENROUTER_API_KEY=
 `
 	if err := os.WriteFile(envFile, []byte(content), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating .env.local: %v\n", err)
@@ -562,9 +795,18 @@ func showVersion() {
 	fmt.Printf("Version: %s\n", version)
 	fmt.Println()
 	fmt.Println("Supported backends:")
-	fmt.Println("  - claude: Anthropic Claude Sonnet 4.5")
-	fmt.Println("  - zai: Z.AI GLM-4.7 / GLM-4.5-Air")
-	fmt.Println("  - kimi: Kimi K2 Thinking / K2 Thinking Turbo")
+	fmt.Println("  Tier 1 (Recommended for code/security):")
+	fmt.Println("    - deepseek: DeepSeek V3/R1 - https://api.deepseek.com")
+	fmt.Println("    - gemini: Google Gemini 2.5 Pro - https://ai.google.dev")
+	fmt.Println("    - mistral: Mistral Large / Codestral - https://console.mistral.ai")
+	fmt.Println("    - claude: Anthropic Claude Sonnet 4.5")
+	fmt.Println("    - zai: Z.AI GLM-4.7 / GLM-4.5-Air")
+	fmt.Println("    - kimi: Kimi K2 Thinking / K2 Thinking Turbo")
+	fmt.Println()
+	fmt.Println("  Tier 2 (Alternative providers):")
+	fmt.Println("    - groq: Groq Llama 3.3 70B/405B - https://console.groq.com")
+	fmt.Println("    - together: Together AI (Llama/Qwen/DeepSeek) - https://api.together.xyz")
+	fmt.Println("    - openrouter: OpenRouter (200+ models) - https://openrouter.ai")
 }
 
 func showHelp() {
@@ -575,25 +817,35 @@ func showHelp() {
 	fmt.Println("Usage: promptops <command> [options]")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  claude                    Switch to Claude (Anthropic) and launch")
-	fmt.Println("  zai                       Switch to Z.AI (GLM) and launch")
-	fmt.Println("  kimi                      Switch to Kimi (Moonshot) and launch")
-	fmt.Println("  status                    Show current backend and configuration")
-	fmt.Println("  run [args]                Launch Claude Code with current backend")
-	fmt.Println("  init                      Initialize .env.local with API key templates")
-	fmt.Println("  version                   Show version information")
-	fmt.Println("  help                      Show this help message")
+	fmt.Println("  Tier 1 Backends:")
+	fmt.Println("    claude                  Switch to Claude (Anthropic) and launch")
+	fmt.Println("    zai                     Switch to Z.AI (GLM) and launch")
+	fmt.Println("    kimi                    Switch to Kimi (Moonshot) and launch")
+	fmt.Println("    deepseek                Switch to DeepSeek (V3/R1) and launch")
+	fmt.Println("    gemini                  Switch to Gemini (Google) and launch")
+	fmt.Println("    mistral                 Switch to Mistral (Large/Codestral) and launch")
+	fmt.Println()
+	fmt.Println("  Tier 2 Backends:")
+	fmt.Println("    groq                    Switch to Groq (Llama) and launch")
+	fmt.Println("    together                Switch to Together AI and launch")
+	fmt.Println("    openrouter              Switch to OpenRouter (200+ models) and launch")
+	fmt.Println()
+	fmt.Println("  General Commands:")
+	fmt.Println("    status                  Show current backend and configuration")
+	fmt.Println("    run [args]              Launch Claude Code with current backend")
+	fmt.Println("    init                    Initialize .env.local with API key templates")
+	fmt.Println("    version                 Show version information")
+	fmt.Println("    help                    Show this help message")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  NEXUS_ENV_FILE            Path to env file (default: ./.env.local)")
 	fmt.Println("  NEXUS_YOLO_MODE           Global YOLO mode (true|false)")
-	fmt.Println("  NEXUS_YOLO_MODE_CLAUDE    YOLO mode for Claude")
-	fmt.Println("  NEXUS_YOLO_MODE_ZAI       YOLO mode for Z.AI")
-	fmt.Println("  NEXUS_YOLO_MODE_KIMI      YOLO mode for Kimi")
+	fmt.Println("  NEXUS_YOLO_MODE_<BACKEND> YOLO mode for specific backend")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  promptops zai             # Switch to Z.AI and launch Claude Code")
-	fmt.Println("  promptops claude          # Switch back to Claude and launch")
+	fmt.Println("  promptops deepseek        # Switch to DeepSeek and launch Claude Code")
+	fmt.Println("  promptops gemini          # Switch to Gemini and launch")
+	fmt.Println("  promptops openrouter      # Switch to OpenRouter and launch")
 	fmt.Println("  promptops status          # Check current configuration")
 	fmt.Println("  promptops run             # Launch with current backend")
 	fmt.Println()
