@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "2.2.0"
+const version = "2.3.0"
 
 type Backend struct {
 	Name        string
@@ -130,6 +130,18 @@ var backends = map[string]Backend{
 		SonnetModel: "anthropic/claude-3.5-sonnet",
 		OpusModel:   "anthropic/claude-3-opus",
 	},
+	"openai": {
+		Name:        "openai",
+		DisplayName: "OpenAI",
+		Provider:    "OpenAI",
+		Models:      "GPT-4o / GPT-4o-mini / o1",
+		AuthVar:     "OPENAI_API_KEY",
+		BaseURL:     "https://api.openai.com/v1",
+		Timeout:     "3000000",
+		HaikuModel:  "gpt-4o-mini",
+		SonnetModel: "gpt-4o",
+		OpusModel:   "o1",
+	},
 }
 
 type Config struct {
@@ -146,6 +158,7 @@ type Config struct {
 	YoloModeGroq         bool
 	YoloModeTogether     bool
 	YoloModeOpenrouter   bool
+	YoloModeOpenai       bool
 	DefaultBackend       string
 	VerifyOnSwitch       bool
 	AuditEnabled         bool
@@ -162,7 +175,7 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter":
+	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter", "openai":
 		switchBackend(cmd, args)
 	case "status", "current":
 		showStatus()
@@ -243,13 +256,15 @@ func loadConfig() *Config {
 				cfg.YoloModeTogether = value == "true"
 			case "NEXUS_YOLO_MODE_OPENROUTER":
 				cfg.YoloModeOpenrouter = value == "true"
+			case "NEXUS_YOLO_MODE_OPENAI":
+				cfg.YoloModeOpenai = value == "true"
 			case "NEXUS_DEFAULT_BACKEND":
 				cfg.DefaultBackend = value
 			case "NEXUS_VERIFY_ON_SWITCH":
 				cfg.VerifyOnSwitch = value == "true"
 			case "NEXUS_AUDIT_LOG":
 				cfg.AuditEnabled = value == "true"
-			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY":
+			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY":
 				cfg.Keys[key] = value
 			}
 		}
@@ -281,6 +296,8 @@ func (c *Config) getYoloMode(backend string) bool {
 		return c.YoloModeTogether
 	case "openrouter":
 		return c.YoloModeOpenrouter
+	case "openai":
+		return c.YoloModeOpenai
 	}
 	return false
 }
@@ -387,6 +404,13 @@ func printLogo(backend string) {
 		fmt.Println("  ██    ██ ██    ██ ██   ██ ██         ██       ██    ██   ██  ██       ██   ██")
 		fmt.Println("   ██████   ██████  ██   ██ ███████    ██       ██    ██   ██  ███████  ██   ██")
 		fmt.Println("  OPENROUTER - 200+ MODELS")
+	case "openai":
+		fmt.Println("   ██████   ██████  ███████  ███████  ███████  ██")
+		fmt.Println("  ██    ██ ██    ██ ██       ██       ██       ██")
+		fmt.Println("  ██    ██ ██    ██ █████    █████    █████    ██")
+		fmt.Println("  ██    ██ ██    ██ ██       ██       ██       ██")
+		fmt.Println("   ██████   ██████  ███████  ███████  ███████  ██")
+		fmt.Println("  OPENAI - GPT-4o / GPT-4o-mini / o1")
 	}
 }
 
@@ -570,133 +594,67 @@ func showStatus() {
 	cfg := loadConfig()
 	current := getCurrentBackend(cfg)
 
-	fmt.Print("\033[H\033[2J") // clear screen
-	fmt.Println("+-------------------------------------------------------------------------------+")
-	fmt.Println("|                    PROMPTOPS ENTERPRISE v" + version + "                       |")
-	fmt.Println("+-------------------------------------------------------------------------------+")
+	fmt.Printf("  Current: %s\n", current)
 	fmt.Println()
-
-	if current != "" {
-		switch current {
-		case "claude":
-			printLogo("claude")
-		case "zai":
-			printLogo("zai")
-		case "kimi":
-			printLogo("kimi")
-		case "deepseek":
-			printLogo("deepseek")
-		case "gemini":
-			printLogo("gemini")
-		case "mistral":
-			printLogo("mistral")
-		case "groq":
-			printLogo("groq")
-		case "together":
-			printLogo("together")
-		case "openrouter":
-			printLogo("openrouter")
-		}
-		fmt.Println()
-		drawBox(fmt.Sprintf("CURRENT: %s BACKEND", strings.ToUpper(current)))
-	} else {
-		fmt.Println("WARNING: No backend configured")
-		fmt.Println()
-	}
+	fmt.Println("BACKENDS")
+	fmt.Println()
+	printBackendStatus(cfg, "claude", "Anthropic", "Claude Sonnet 4.5")
+	printBackendStatus(cfg, "openai", "OpenAI", "GPT-4o / GPT-4o-mini / o1")
+	printBackendStatus(cfg, "deepseek", "DeepSeek", "DeepSeek-V3 / R1")
+	printBackendStatus(cfg, "gemini", "Google", "Gemini 2.5 Pro")
+	printBackendStatus(cfg, "mistral", "Mistral", "Large / Codestral")
+	printBackendStatus(cfg, "zai", "Z.A.I", "GLM-4.7 / GLM-4.5-Air")
+	printBackendStatus(cfg, "kimi", "Moonshot", "Kimi K2")
+	printBackendStatus(cfg, "groq", "Groq", "Llama 3.3 70B / 405B")
+	printBackendStatus(cfg, "together", "Together", "Llama / Qwen / DeepSeek")
+	printBackendStatus(cfg, "openrouter", "OpenRouter", "200+ models")
 
 	fmt.Println()
-	fmt.Println("Available Backends:")
-	fmt.Println("------------------------------------------------------")
+	fmt.Println("API KEYS")
 	fmt.Println()
-	fmt.Println("  * claude    -> Anthropic Claude Sonnet 4.5")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("claude"))
-	fmt.Println()
-	fmt.Println("  * zai       -> Z.AI GLM-4.7 / GLM-4.5-Air")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("zai"))
-	fmt.Println()
-	fmt.Println("  * kimi      -> Kimi K2 Thinking / K2 Thinking Turbo")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("kimi"))
-	fmt.Println("  * deepseek  -> DeepSeek V3/R1")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("deepseek"))
-	fmt.Println()
-	fmt.Println("  * gemini    -> Google Gemini 2.5 Pro")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("gemini"))
-	fmt.Println()
-	fmt.Println("  * mistral   -> Mistral Large / Codestral")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("mistral"))
-	fmt.Println()
-	fmt.Println("  * groq      -> Groq Llama 3.3 70B/405B")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("groq"))
-	fmt.Println()
-	fmt.Println("  * together  -> Together AI (Llama/Qwen/DeepSeek)")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("together"))
-	fmt.Println()
-	fmt.Println("  * openrouter-> OpenRouter (200+ models)")
-	fmt.Printf("               YOLO: %v\n", cfg.getYoloMode("openrouter"))
-	fmt.Println()
-	fmt.Println("------------------------------------------------------")
-	fmt.Println()
-
-	fmt.Println("API Keys Status:")
-	fmt.Println()
-	if key := cfg.Keys["ANTHROPIC_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] ANTHROPIC_API_KEY  %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] ANTHROPIC_API_KEY")
-	}
-	if key := cfg.Keys["ZAI_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] ZAI_API_KEY        %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] ZAI_API_KEY")
-	}
-	if key := cfg.Keys["KIMI_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] KIMI_API_KEY       %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] KIMI_API_KEY")
-	}
-	if key := cfg.Keys["DEEPSEEK_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] DEEPSEEK_API_KEY   %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] DEEPSEEK_API_KEY")
-	}
-	if key := cfg.Keys["GEMINI_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] GEMINI_API_KEY     %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] GEMINI_API_KEY")
-	}
-	if key := cfg.Keys["MISTRAL_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] MISTRAL_API_KEY    %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] MISTRAL_API_KEY")
-	}
-	if key := cfg.Keys["GROQ_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] GROQ_API_KEY       %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] GROQ_API_KEY")
-	}
-	if key := cfg.Keys["TOGETHER_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] TOGETHER_API_KEY   %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] TOGETHER_API_KEY")
-	}
-	if key := cfg.Keys["OPENROUTER_API_KEY"]; key != "" {
-		fmt.Printf("  [OK] OPENROUTER_API_KEY %s\n", maskKey(key))
-	} else {
-		fmt.Println("  [MISSING] OPENROUTER_API_KEY")
-	}
+	printKeyStatus(cfg.Keys["ANTHROPIC_API_KEY"], "ANTHROPIC_API_KEY")
+	printKeyStatus(cfg.Keys["OPENAI_API_KEY"], "OPENAI_API_KEY")
+	printKeyStatus(cfg.Keys["DEEPSEEK_API_KEY"], "DEEPSEEK_API_KEY")
+	printKeyStatus(cfg.Keys["GEMINI_API_KEY"], "GEMINI_API_KEY")
+	printKeyStatus(cfg.Keys["MISTRAL_API_KEY"], "MISTRAL_API_KEY")
+	printKeyStatus(cfg.Keys["ZAI_API_KEY"], "ZAI_API_KEY")
+	printKeyStatus(cfg.Keys["KIMI_API_KEY"], "KIMI_API_KEY")
+	printKeyStatus(cfg.Keys["GROQ_API_KEY"], "GROQ_API_KEY")
+	printKeyStatus(cfg.Keys["TOGETHER_API_KEY"], "TOGETHER_API_KEY")
+	printKeyStatus(cfg.Keys["OPENROUTER_API_KEY"], "OPENROUTER_API_KEY")
 
 	fmt.Println()
-	fmt.Println("Configuration:")
+	fmt.Println("CONFIGURATION")
+	fmt.Printf("  Audit Logging: %v | Verify: %v | YOLO: %v\n",
+		boolStr(cfg.AuditEnabled), boolStr(cfg.VerifyOnSwitch), boolStr(cfg.YoloMode))
 	fmt.Println()
-	fmt.Printf("  Audit Logging: %v\n", cfg.AuditEnabled)
-	fmt.Printf("  Verify on Switch: %v\n", cfg.VerifyOnSwitch)
-	fmt.Printf("  Default Backend: %s\n", cfg.DefaultBackend)
-	fmt.Printf("  YOLO Mode: %v\n", cfg.YoloMode)
+}
 
-	fmt.Println()
-	fmt.Println("Tip: Add missing keys to .env.local")
-	fmt.Println("Usage: promptops <backend> to switch and launch")
-	fmt.Println()
+func printBackendStatus(cfg *Config, name, provider, models string) {
+	marker := " "
+	if getCurrentBackend(cfg) == name {
+		marker = ">"
+	}
+	yolo := ""
+	if cfg.getYoloMode(name) {
+		yolo = " [YOLO]"
+	}
+	fmt.Printf("  %s %-10s  %-12s  %s%s\n", marker, name, provider, models, yolo)
+}
+
+func printKeyStatus(key, name string) {
+	if key != "" {
+		fmt.Printf("  %-22s %s\n", name, maskKey(key))
+	} else {
+		fmt.Printf("  %-22s not configured\n", name)
+	}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 func initEnv() {
@@ -725,6 +683,7 @@ NEXUS_YOLO_MODE_MISTRAL=false
 NEXUS_YOLO_MODE_GROQ=false
 NEXUS_YOLO_MODE_TOGETHER=false
 NEXUS_YOLO_MODE_OPENROUTER=false
+NEXUS_YOLO_MODE_OPENAI=false
 
 # Global YOLO mode - overrides all backends when true
 NEXUS_YOLO_MODE=false
@@ -748,6 +707,10 @@ NEXUS_VERIFY_ON_SWITCH=true
 # Anthropic Claude API Key
 # Get your API key from: https://console.anthropic.com/
 ANTHROPIC_API_KEY=
+
+# OpenAI API Key
+# Get your API key from: https://platform.openai.com/
+OPENAI_API_KEY=
 
 # Z.AI (GLM/Zhipu AI) API Key
 # Get your API key from: https://open.bigmodel.cn/
@@ -800,6 +763,7 @@ func showVersion() {
 	fmt.Println("    - gemini: Google Gemini 2.5 Pro - https://ai.google.dev")
 	fmt.Println("    - mistral: Mistral Large / Codestral - https://console.mistral.ai")
 	fmt.Println("    - claude: Anthropic Claude Sonnet 4.5")
+	fmt.Println("    - openai: OpenAI GPT-4o / GPT-4o-mini / o1 - https://openai.com")
 	fmt.Println("    - zai: Z.AI GLM-4.7 / GLM-4.5-Air")
 	fmt.Println("    - kimi: Kimi K2 Thinking / K2 Thinking Turbo")
 	fmt.Println()
@@ -819,6 +783,7 @@ func showHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  Tier 1 Backends:")
 	fmt.Println("    claude                  Switch to Claude (Anthropic) and launch")
+	fmt.Println("    openai                  Switch to OpenAI (GPT-4o/o1) and launch")
 	fmt.Println("    zai                     Switch to Z.AI (GLM) and launch")
 	fmt.Println("    kimi                    Switch to Kimi (Moonshot) and launch")
 	fmt.Println("    deepseek                Switch to DeepSeek (V3/R1) and launch")
