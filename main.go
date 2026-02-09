@@ -94,19 +94,21 @@ var (
 )
 
 type Backend struct {
-	Name        string
-	DisplayName string
-	Provider    string
-	Models      string
-	AuthVar     string
-	BaseURL     string
-	Timeout     string
-	HaikuModel  string
-	SonnetModel string
-	OpusModel   string
+	Name         string
+	DisplayName  string
+	Provider     string
+	Models       string
+	AuthVar      string
+	BaseURL      string
+	Timeout      string
+	HaikuModel   string
+	SonnetModel  string
+	OpusModel    string
 	// Pricing per 1M tokens (USD)
-	InputPrice  float64
-	OutputPrice float64
+	InputPrice   float64
+	OutputPrice  float64
+	// Coding capability tier (S/A/B/C)
+	CodingTier   string
 }
 
 var backends = map[string]Backend{
@@ -118,6 +120,7 @@ var backends = map[string]Backend{
 		AuthVar:     "ANTHROPIC_API_KEY",
 		InputPrice:  3.00,
 		OutputPrice: 15.00,
+		CodingTier:  "S",
 	},
 	"zai": {
 		Name:        "zai",
@@ -132,6 +135,7 @@ var backends = map[string]Backend{
 		OpusModel:   "glm-4.7",
 		InputPrice:  0.50,
 		OutputPrice: 2.00,
+		CodingTier:  "A",
 	},
 	"kimi": {
 		Name:        "kimi",
@@ -146,6 +150,7 @@ var backends = map[string]Backend{
 		OpusModel:   "kimi-for-coding",
 		InputPrice:  2.00,
 		OutputPrice: 8.00,
+		CodingTier:  "S",
 	},
 	"deepseek": {
 		Name:        "deepseek",
@@ -160,6 +165,7 @@ var backends = map[string]Backend{
 		OpusModel:   "deepseek-reasoner",
 		InputPrice:  0.27,
 		OutputPrice: 1.10,
+		CodingTier:  "S",
 	},
 	"gemini": {
 		Name:        "gemini",
@@ -174,6 +180,7 @@ var backends = map[string]Backend{
 		OpusModel:   "gemini-2.5-pro",
 		InputPrice:  1.25,
 		OutputPrice: 10.00,
+		CodingTier:  "A",
 	},
 	"mistral": {
 		Name:        "mistral",
@@ -188,6 +195,7 @@ var backends = map[string]Backend{
 		OpusModel:   "mistral-large-latest",
 		InputPrice:  2.00,
 		OutputPrice: 6.00,
+		CodingTier:  "B",
 	},
 	"groq": {
 		Name:        "groq",
@@ -202,6 +210,7 @@ var backends = map[string]Backend{
 		OpusModel:   "llama-3.1-405b-reasoning",
 		InputPrice:  0.59,
 		OutputPrice: 0.79,
+		CodingTier:  "B",
 	},
 	"together": {
 		Name:        "together",
@@ -216,6 +225,7 @@ var backends = map[string]Backend{
 		OpusModel:   "meta-llama/Llama-3.1-405B-Instruct",
 		InputPrice:  1.00,
 		OutputPrice: 2.00,
+		CodingTier:  "B",
 	},
 	"openrouter": {
 		Name:        "openrouter",
@@ -230,6 +240,7 @@ var backends = map[string]Backend{
 		OpusModel:   "anthropic/claude-3-opus",
 		InputPrice:  3.00,
 		OutputPrice: 15.00,
+		CodingTier:  "A",
 	},
 	"openai": {
 		Name:        "openai",
@@ -244,6 +255,7 @@ var backends = map[string]Backend{
 		OpusModel:   "o1",
 		InputPrice:  2.50,
 		OutputPrice: 10.00,
+		CodingTier:  "A",
 	},
 }
 
@@ -794,6 +806,15 @@ func showStatus() {
 	session := getCurrentSession(cfg)
 	dailyCost, weeklyCost, monthlyCost, byBackend := calculateCosts(cfg)
 
+	// Check for --check flag to enable health check/latency
+	checkLatency := false
+	for _, arg := range os.Args {
+		if arg == "--check" || arg == "--latency" {
+			checkLatency = true
+			break
+		}
+	}
+
 	// Title
 	fmt.Println()
 	title := styleTitle.Render(fmt.Sprintf("PROMPTOPS v%s", version))
@@ -838,33 +859,73 @@ func showStatus() {
 		}
 
 		status := styleSuccess.Render("Ready")
+		extraCol := "--"
+
 		if !hasKey {
 			status = styleMuted.Render("No Key")
+		} else if checkLatency {
+			result := checkBackendHealth(cfg, be)
+			if result.Status == "ok" {
+				extraCol = formatDuration(result.Latency)
+			} else if result.Status == "error" {
+				status = styleError.Render("Error")
+			}
+		}
+
+		// Show cost - subscription models highlighted differently
+		if !checkLatency {
+			costStr := fmt.Sprintf("$%.2f/$%.2f", be.InputPrice, be.OutputPrice)
+			if name == "kimi" || name == "zai" {
+				// Subscription models - show cost with "Sub" indicator
+				extraCol = styleMuted.Render("Sub " + costStr)
+			} else {
+				// Token-based models
+				extraCol = costStr
+			}
+		}
+
+		// Style the coding tier
+		tierStr := be.CodingTier
+		switch tierStr {
+		case "S":
+			tierStr = styleSuccess.Render(tierStr)
+		case "A":
+			tierStr = lipgloss.NewStyle().Foreground(colorAccent).Render(tierStr)
+		case "B":
+			tierStr = lipgloss.NewStyle().Foreground(colorText).Render(tierStr)
+		case "C":
+			tierStr = styleMuted.Render(tierStr)
 		}
 
 		rows = append(rows, []string{
 			marker,
 			be.DisplayName,
-			truncate(be.Models, 25),
+			truncate(be.Models, 22),
 			status,
-			"--",
+			tierStr,
+			extraCol,
 		})
 	}
 
+	header := "Cost ($in/out per 1M)"
+	if checkLatency {
+		header = "Latency"
+	}
+
 	t := table.New().
-		Headers("", "Provider", "Models", "Status", "Latency").
+		Headers("", "Provider", "Models", "Status", "Tier", header).
 		Rows(rows...).
 		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if row == 0 {
-				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Padding(0, 1)
 			}
 			if col == 0 {
 				return lipgloss.NewStyle().Width(2)
 			}
 			return lipgloss.NewStyle().Padding(0, 1)
 		}).
-		Width(80)
+		Width(90)
 
 	fmt.Println(t.Render())
 
@@ -1676,6 +1737,17 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
+	case "kimi":
+		// Kimi API - try the BaseURL first
+		if be.BaseURL != "" {
+			url = be.BaseURL + "/v1/models"
+			req, err = http.NewRequest("GET", url, nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+		} else {
+			return HealthResult{Backend: be.Name, Status: "skip", Message: "No BaseURL configured"}
+		}
 	default:
 		// For other backends, just check if we can resolve the base URL
 		if be.BaseURL != "" {
@@ -1693,7 +1765,7 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		return HealthResult{Backend: be.Name, Status: "error", Message: err.Error()}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	latency := time.Since(start)
 
