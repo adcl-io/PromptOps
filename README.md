@@ -11,6 +11,12 @@ AI Model Backend Switcher for Claude Code. Switch between 10+ LLM providers (Ope
 - **Cross-Platform**: Native binaries for macOS (Intel/Apple Silicon) and Linux
 - **Audit Logging**: Track all backend switches with timestamps
 
+## Requirements
+
+- Go 1.21 or later (for building from source)
+- Claude Code CLI (`claude` command must be in PATH)
+- At least one API key from a supported LLM provider
+
 ## Installation
 
 ### Pre-built Binaries
@@ -149,41 +155,143 @@ Enable YOLO mode to skip animations and confirmations:
 NEXUS_YOLO_MODE=true
 
 # Per-backend YOLO
-NEXUS_YOLO_MODE_KIMI=true
+NEXUS_YOLO_MODE_DEEPSEEK=true
+NEXUS_YOLO_MODE_OPENAI=true
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `promptops openai` | Switch to OpenAI and launch |
+| `promptops deepseek` | Switch to DeepSeek and launch |
+| `promptops gemini` | Switch to Gemini and launch |
+| `promptops mistral` | Switch to Mistral and launch |
 | `promptops claude` | Switch to Claude and launch |
 | `promptops zai` | Switch to Z.AI and launch |
 | `promptops kimi` | Switch to Kimi and launch |
+| `promptops groq` | Switch to Groq and launch |
+| `promptops together` | Switch to Together AI and launch |
+| `promptops openrouter` | Switch to OpenRouter and launch |
 | `promptops run` | Launch with current backend |
 | `promptops status` | Show configuration |
 | `promptops init` | Create `.env.local` template |
 | `promptops version` | Show version |
 | `promptops help` | Show help |
 
+## Examples
+
+### Daily Workflow
+
+```bash
+# Check current configuration
+promptops status
+
+# Switch to DeepSeek for a reasoning-heavy task
+promptops deepseek
+
+# Later, switch to GPT-4o for general coding
+promptops openai
+
+# Use Groq for ultra-fast responses
+promptops groq
+
+# Launch without switching (uses current backend)
+promptops run
+```
+
+### Using YOLO Mode for Speed
+
+```bash
+# Enable YOLO for DeepSeek to skip confirmations
+export NEXUS_YOLO_MODE_DEEPSEEK=true
+
+# Now switching is instant
+promptops deepseek
+```
+
+### Passing Arguments to Claude Code
+
+```bash
+# Run with specific permissions mode
+promptops run --permission-mode acceptEdits
+
+# Run in a specific directory
+promptops run /path/to/project
+```
+
 ## Backend Configuration
 
-### Claude (Anthropic)
+### Tier 1 Backends (Recommended for Code/Security)
+
+#### OpenAI
+
+Uses standard OpenAI API:
+
+- Base URL: `https://api.openai.com/v1`
+- Models: GPT-4o (Sonnet), GPT-4o-mini (Haiku), o1 (Opus)
+
+#### DeepSeek
+
+Uses DeepSeek API for reasoning and chat models:
+
+- Base URL: `https://api.deepseek.com/v1`
+- Models: DeepSeek-V3 (Sonnet), DeepSeek-R1 (Opus), DeepSeek-chat (Haiku)
+
+#### Gemini (Google)
+
+Uses Gemini API via OpenAI-compatible endpoint:
+
+- Base URL: `https://generativelanguage.googleapis.com/v1beta/openai`
+- Models: Gemini 2.5 Pro (Sonnet/Opus), Gemini 2.5 Flash (Haiku)
+
+#### Mistral
+
+Uses Mistral AI API:
+
+- Base URL: `https://api.mistral.ai/v1`
+- Models: Mistral Large (Sonnet/Opus), Codestral (Haiku)
+
+#### Claude (Anthropic)
 
 Uses standard Anthropic API. No additional configuration required beyond `ANTHROPIC_API_KEY`.
 
-### Z.AI (GLM)
+#### Z.AI (GLM)
 
 Proxies Claude Code requests to Z.AI's GLM models:
 
 - Base URL: `https://api.z.ai/api/anthropic`
 - Models: GLM-4.7 (Sonnet/Opus), GLM-4.5-Air (Haiku)
 
-### Kimi (Moonshot)
+#### Kimi (Moonshot)
 
 Uses Kimi Code API for coding-optimized models:
 
 - Base URL: `https://api.kimi.com/coding`
 - Models: kimi-for-coding
+
+### Tier 2 Backends (Alternative Providers)
+
+#### Groq
+
+Ultra-fast inference with Llama models:
+
+- Base URL: `https://api.groq.com/openai/v1`
+- Models: Llama 3.3 70B (Sonnet), Llama 3.1 405B (Opus)
+
+#### Together AI
+
+Aggregated model hosting:
+
+- Base URL: `https://api.together.xyz/v1`
+- Models: DeepSeek-V3 (Sonnet), Llama 3.1 405B (Opus), Llama 3.3 70B (Haiku)
+
+#### OpenRouter
+
+Unified API for 200+ models:
+
+- Base URL: `https://openrouter.ai/api/v1`
+- Models: Anthropic Claude 3.5 Sonnet (Sonnet), Claude 3 Opus (Opus), Gemini Flash 1.5 (Haiku)
 
 ## Project Structure
 
@@ -206,7 +314,7 @@ Uses Kimi Code API for coding-optimized models:
 - State file contains only backend name, never keys
 - Environment variables filtered before launching child process
 
-## Development
+### Development
 
 ### Building
 
@@ -214,16 +322,19 @@ Uses Kimi Code API for coding-optimized models:
 # Local build
 go build -o promptops .
 
+# Install to /usr/local/bin
+make install
+
 # Cross-compile
 make linux      # Linux AMD64/ARM64
 make macos      # macOS AMD64
-make macos-arm  # macOS ARM64
-```
+make macos-arm  # macOS ARM64 (Apple Silicon)
+make release    # Build all platforms
 
-### Testing
-
-```bash
-make test
+# Development
+make test       # Run tests
+make fmt        # Format code
+make clean      # Clean build artifacts
 ```
 
 ## License
