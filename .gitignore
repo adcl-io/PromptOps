@@ -32,6 +32,11 @@ state
 .nexus-audit.log
 .promptops-audit.log
 
+# Session and usage data (user-specific)
+.promptops-sessions.json
+.promptops-usage.jsonl
+session
+
 # IDE
 .idea/
 .vscode/
