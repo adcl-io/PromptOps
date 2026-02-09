@@ -14,45 +14,83 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 )
 
 const version = "2.4.0"
 
-// ANSI color codes
-const (
-	ColorReset   = "\033[0m"
-	ColorBold    = "\033[1m"
-	ColorDim     = "\033[2m"
-	ColorCyan    = "\033[36m"
-	ColorGreen   = "\033[32m"
-	ColorYellow  = "\033[33m"
-	ColorRed     = "\033[31m"
-	ColorMagenta = "\033[35m"
-	ColorGray    = "\033[90m"
-)
+// Lipgloss styles
+var (
+	// Base colors
+	colorPrimary = lipgloss.Color("#00BCD4") // Cyan
+	colorSuccess = lipgloss.Color("#4CAF50") // Green
+	colorWarning = lipgloss.Color("#FFC107") // Yellow
+	colorError   = lipgloss.Color("#F44336") // Red
+	colorMuted   = lipgloss.Color("#757575") // Gray
+	colorAccent  = lipgloss.Color("#E91E63") // Magenta
+	colorText    = lipgloss.Color("#FFFFFF") // White
+	colorSubtle  = lipgloss.Color("#9E9E9E") // Light gray
+	colorDark    = lipgloss.Color("#212121") // Dark background
 
-// Status symbols (ASCII only, no emojis)
-const (
-	SymbolReady   = "+"
-	SymbolCurrent = ">"
-	SymbolEmpty   = "-"
-	SymbolError   = "x"
-	SymbolWarning = "!"
-)
+	// Styles
+	styleTitle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorPrimary).
+			Padding(0, 1)
 
-// Box drawing characters
-const (
-	BoxTL = "+"
-	BoxTR = "+"
-	BoxBL = "+"
-	BoxBR = "+"
-	BoxH  = "-"
-	BoxV  = "|"
-	BoxT  = "+"
-	BoxB  = "+"
-	BoxL  = "+"
-	BoxR  = "+"
-	BoxC  = "+"
+	styleHeader = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorText).
+			Background(colorPrimary).
+			Padding(0, 1).
+			Width(78)
+
+	styleSection = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorPrimary).
+			MarginTop(1)
+
+	styleLabel = lipgloss.NewStyle().
+			Foreground(colorSubtle)
+
+	styleValue = lipgloss.NewStyle().
+			Foreground(colorText)
+
+	styleSuccess = lipgloss.NewStyle().
+			Foreground(colorSuccess)
+
+	styleWarning = lipgloss.NewStyle().
+			Foreground(colorWarning)
+
+	styleError = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	styleMuted = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	styleAccent = lipgloss.NewStyle().
+			Foreground(colorAccent).
+			Bold(true)
+
+	styleCurrent = lipgloss.NewStyle().
+			Foreground(colorAccent).
+			Bold(true)
+
+	styleBox = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colorPrimary).
+			Padding(1, 2).
+			Width(80)
+
+	styleProgressFilled = lipgloss.NewStyle().
+				Background(colorSuccess).
+				Foreground(colorText)
+
+	styleProgressEmpty = lipgloss.NewStyle().
+				Background(colorMuted).
+				Foreground(colorText)
 )
 
 type Backend struct {
@@ -754,95 +792,100 @@ func showStatus() {
 	cfg := loadConfig()
 	current := getCurrentBackend(cfg)
 	session := getCurrentSession(cfg)
-
-	// Calculate costs
 	dailyCost, weeklyCost, monthlyCost, byBackend := calculateCosts(cfg)
 
-	// Get terminal width (default to 80)
-	width := 80
-
-	// Print header box
+	// Title
 	fmt.Println()
-	printBoxed(fmt.Sprintf("PROMPTOPS v%s", version), width)
+	title := styleTitle.Render(fmt.Sprintf("PROMPTOPS v%s", version))
+	fmt.Println(lipgloss.PlaceHorizontal(80, lipgloss.Center, title))
+	fmt.Println()
 
-	// Current backend section
-	fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "CURRENT BACKEND"), strings.Repeat(" ", width-18))
-
+	// Current Backend Section
+	fmt.Println(styleSection.Render("CURRENT BACKEND"))
 	if current != "" {
 		be := backends[current]
-		yoloStr := ""
+		status := styleCurrent.Render("> " + be.DisplayName)
 		if cfg.getYoloMode(current) {
-			yoloStr = color(ColorYellow, " [YOLO]")
+			status += styleWarning.Render(" [YOLO]")
 		}
-		fmt.Printf("%s %s %s%s%s\n", BoxV, color(ColorMagenta, SymbolCurrent), color(ColorBold, be.DisplayName), yoloStr, strings.Repeat(" ", width-len(be.DisplayName)-len(yoloStr)-5))
-		fmt.Printf("%s   %s%s\n", BoxV, be.Models, strings.Repeat(" ", width-len(be.Models)-4))
+		fmt.Println(status)
+		fmt.Println(styleMuted.Render(be.Models))
 	} else {
-		fmt.Printf("%s %s No backend configured\n", BoxV, color(ColorGray, SymbolEmpty))
+		fmt.Println(styleMuted.Render("No backend configured"))
 	}
 
 	// Session info
 	if session != nil {
-		fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "SESSION"), strings.Repeat(" ", width-10))
-		fmt.Printf("%s   %s (%s)%s\n", BoxV, session.Name, session.Status, strings.Repeat(" ", width-len(session.Name)-len(session.Status)-7))
+		fmt.Println()
+		fmt.Println(styleSection.Render("SESSION"))
+		fmt.Printf("%s %s (%s)\n", styleAccent.Render(">"), session.Name, styleSuccess.Render(session.Status))
 	}
 
-	fmt.Print(BoxL)
-	for i := 0; i < width-2; i++ {
-		fmt.Print(BoxH)
-	}
-	fmt.Println(BoxR)
-
-	// Available backends section
-	fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "AVAILABLE BACKENDS"), strings.Repeat(" ", width-21))
-	fmt.Print(BoxV)
-	fmt.Printf("  %-12s %-20s %-24s %-10s\n", "Provider", "Models", "Status", "Latency")
-	fmt.Print(BoxV)
-	sep := strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 20) + " " + strings.Repeat(BoxH, 24) + " " + strings.Repeat(BoxH, 10)
-	fmt.Println(sep)
+	// Backends Table
+	fmt.Println()
+	fmt.Println(styleSection.Render("AVAILABLE BACKENDS"))
 
 	backendOrder := []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter"}
 
+	rows := [][]string{}
 	for _, name := range backendOrder {
-		be, ok := backends[name]
-		if !ok {
-			continue
-		}
+		be := backends[name]
+		hasKey := cfg.Keys[be.AuthVar] != ""
 
 		marker := " "
 		if name == current {
-			marker = color(ColorMagenta, SymbolCurrent)
+			marker = styleAccent.Render(">")
 		}
 
-		hasKey := cfg.Keys[be.AuthVar] != ""
-		status := color(ColorGreen, SymbolReady+" Ready")
-		latency := "--"
-
+		status := styleSuccess.Render("Ready")
 		if !hasKey {
-			status = color(ColorGray, SymbolEmpty+" No Key")
+			status = styleMuted.Render("No Key")
 		}
 
-		fmt.Printf("%s %s %-12s %-20s %-24s %-10s\n", BoxV, marker, be.Provider, truncate(be.Models, 20), status, latency)
+		rows = append(rows, []string{
+			marker,
+			be.DisplayName,
+			truncate(be.Models, 25),
+			status,
+			"--",
+		})
 	}
 
-	printBoxBottom(width)
+	t := table.New().
+		Headers("", "Provider", "Models", "Status", "Latency").
+		Rows(rows...).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == 0 {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+			}
+			if col == 0 {
+				return lipgloss.NewStyle().Width(2)
+			}
+			return lipgloss.NewStyle().Padding(0, 1)
+		}).
+		Width(80)
 
-	// Cost summary section
+	fmt.Println(t.Render())
+
+	// Cost Summary
 	fmt.Println()
-	printBoxed(fmt.Sprintf("COST SUMMARY (This Month: %s / %s)", formatCurrency(monthlyCost), formatCurrency(cfg.MonthlyBudget)), width)
+	fmt.Println(styleSection.Render("COST SUMMARY"))
+	fmt.Printf("This Month: %s / %s\n",
+		styleValue.Render(formatCurrency(monthlyCost)),
+		styleValue.Render(formatCurrency(cfg.MonthlyBudget)))
+	fmt.Println()
 
-	fmt.Printf("%s %s: %s / %s  %s %.0f%%\n", BoxV, "Daily   ", formatCurrency(dailyCost), formatCurrency(cfg.DailyBudget), printProgressBar(dailyCost/cfg.DailyBudget*100, 20), dailyCost/cfg.DailyBudget*100)
-	fmt.Printf("%s %s: %s / %s  %s %.0f%%\n", BoxV, "Weekly  ", formatCurrency(weeklyCost), formatCurrency(cfg.WeeklyBudget), printProgressBar(weeklyCost/cfg.WeeklyBudget*100, 20), weeklyCost/cfg.WeeklyBudget*100)
-	fmt.Printf("%s %s: %s / %s  %s %.0f%%\n", BoxV, "Monthly ", formatCurrency(monthlyCost), formatCurrency(cfg.MonthlyBudget), printProgressBar(monthlyCost/cfg.MonthlyBudget*100, 20), monthlyCost/cfg.MonthlyBudget*100)
+	// Budget progress bars
+	renderProgressBar("Daily  ", dailyCost, cfg.DailyBudget)
+	renderProgressBar("Weekly ", weeklyCost, cfg.WeeklyBudget)
+	renderProgressBar("Monthly", monthlyCost, cfg.MonthlyBudget)
 
+	// Top backends by usage
 	if len(byBackend) > 0 {
-		fmt.Print(BoxL)
-		for i := 0; i < width-2; i++ {
-			fmt.Print(BoxH)
-		}
-		fmt.Println(BoxR)
-		fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "TOP BACKENDS BY USAGE"), strings.Repeat(" ", width-24))
+		fmt.Println()
+		fmt.Println(styleSection.Render("TOP BACKENDS BY USAGE"))
 
-		// Sort backends by cost
 		type backendCost struct {
 			name string
 			cost float64
@@ -857,40 +900,71 @@ func showStatus() {
 
 		for _, b := range bc {
 			percent := b.cost / total * 100
-			bar := printProgressBar(percent, 30)
-			fmt.Printf("%s  %-10s %s (%.0f%%)  %s\n", BoxV, backends[b.name].DisplayName, formatCurrency(b.cost), percent, bar)
+			fmt.Printf("%-12s %8s  %s\n",
+				backends[b.name].DisplayName,
+				formatCurrency(b.cost),
+				renderMiniBar(percent),
+			)
 		}
 	}
 
-	printBoxBottom(width)
 	fmt.Println()
 }
 
-func printBackendStatus(cfg *Config, name, provider, models string) {
-	marker := " "
-	if getCurrentBackend(cfg) == name {
-		marker = ">"
+func renderProgressBar(label string, current, limit float64) {
+	percent := current / limit * 100
+	if percent > 100 {
+		percent = 100
 	}
-	yolo := ""
-	if cfg.getYoloMode(name) {
-		yolo = " [YOLO]"
+
+	width := 40
+	filled := int(percent * float64(width) / 100)
+	if filled < 0 {
+		filled = 0
 	}
-	fmt.Printf("  %s %-10s  %-12s  %s%s\n", marker, name, provider, models, yolo)
+
+	barColor := colorSuccess
+	if percent >= 90 {
+		barColor = colorError
+	} else if percent >= 70 {
+		barColor = colorWarning
+	}
+
+	filledBar := lipgloss.NewStyle().Background(barColor).Foreground(colorText).Render(strings.Repeat(" ", filled))
+	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", width-filled))
+
+	fmt.Printf("%s  %s / %s  %s%s  %.0f%%\n",
+		styleLabel.Render(label),
+		styleValue.Render(formatCurrency(current)),
+		styleValue.Render(formatCurrency(limit)),
+		filledBar,
+		emptyBar,
+		percent,
+	)
 }
 
-func printKeyStatus(key, name string) {
-	if key != "" {
-		fmt.Printf("  %-22s %s\n", name, maskKey(key))
-	} else {
-		fmt.Printf("  %-22s not configured\n", name)
+func renderMiniBar(percent float64) string {
+	width := 20
+	filled := int(percent * float64(width) / 100)
+	if filled < 0 {
+		filled = 0
 	}
-}
+	if filled > width {
+		filled = width
+	}
 
-func boolStr(b bool) string {
-	if b {
-		return "on"
+	barColor := colorSuccess
+	if percent >= 50 {
+		barColor = colorWarning
 	}
-	return "off"
+	if percent >= 80 {
+		barColor = colorError
+	}
+
+	filledBar := lipgloss.NewStyle().Background(barColor).Render(strings.Repeat(" ", filled))
+	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", width-filled))
+
+	return filledBar + emptyBar + fmt.Sprintf(" %.0f%%", percent)
 }
 
 func initEnv() {
@@ -1255,57 +1329,15 @@ func calculateCosts(cfg *Config) (daily, weekly, monthly float64, byBackend map[
 	return daily, weekly, monthly, byBackend
 }
 
-// UI Helper functions
-func color(colorCode, text string) string {
-	return colorCode + text + ColorReset
-}
-
-func printBoxed(title string, width int) {
-	fmt.Print(BoxTL)
-	for i := 0; i < width-2; i++ {
-		fmt.Print(BoxH)
-	}
-	fmt.Println(BoxTR)
-
-	fmt.Printf("%s %s%s %s\n", BoxV, color(ColorBold, title), strings.Repeat(" ", width-len(title)-4), BoxV)
-
-	fmt.Print(BoxL)
-	for i := 0; i < width-2; i++ {
-		fmt.Print(BoxH)
-	}
-	fmt.Println(BoxR)
-}
-
-func printBoxBottom(width int) {
-	fmt.Print(BoxBL)
-	for i := 0; i < width-2; i++ {
-		fmt.Print(BoxH)
-	}
-	fmt.Println(BoxBR)
-}
-
-func printProgressBar(percent float64, width int) string {
-	filled := int(percent * float64(width) / 100)
-	if filled > width {
-		filled = width
-	}
-	if filled < 0 {
-		filled = 0
-	}
-
-	barColor := ColorGreen
-	if percent >= 90 {
-		barColor = ColorRed
-	} else if percent >= 70 {
-		barColor = ColorYellow
-	}
-
-	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
-	return color(barColor, bar)
-}
-
 func formatCurrency(amount float64) string {
 	return fmt.Sprintf("$%.2f", amount)
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func formatDuration(d time.Duration) string {
@@ -1318,44 +1350,24 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
 // Command handlers for new features
 
 func showCostDashboard() {
 	cfg := loadConfig()
 	dailyCost, weeklyCost, monthlyCost, byBackend := calculateCosts(cfg)
 
-	width := 80
-
 	fmt.Println()
-	printBoxed("COST DASHBOARD", width)
+	fmt.Println(styleSection.Render("COST DASHBOARD"))
+	fmt.Println()
 
-	fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "SPENDING SUMMARY"), strings.Repeat(" ", width-19))
-	fmt.Print(BoxV)
-	sep := strings.Repeat(BoxH, width-2)
-	fmt.Println(sep)
-
-	fmt.Printf("%s  Today:     %s  %s %.0f%% of daily limit\n", BoxV, formatCurrency(dailyCost), printProgressBar(dailyCost/cfg.DailyBudget*100, 20), dailyCost/cfg.DailyBudget*100)
-	fmt.Printf("%s  This Week: %s  %s %.0f%% of weekly limit\n", BoxV, formatCurrency(weeklyCost), printProgressBar(weeklyCost/cfg.WeeklyBudget*100, 20), weeklyCost/cfg.WeeklyBudget*100)
-	fmt.Printf("%s  This Month:%s  %s %.0f%% of monthly limit\n", BoxV, formatCurrency(monthlyCost), printProgressBar(monthlyCost/cfg.MonthlyBudget*100, 20), monthlyCost/cfg.MonthlyBudget*100)
+	fmt.Println(styleSection.Render("SPENDING SUMMARY"))
+	renderProgressBar("Today    ", dailyCost, cfg.DailyBudget)
+	renderProgressBar("This Week", weeklyCost, cfg.WeeklyBudget)
+	renderProgressBar("This Month", monthlyCost, cfg.MonthlyBudget)
 
 	if len(byBackend) > 0 {
-		fmt.Print(BoxL)
-		for i := 0; i < width-2; i++ {
-			fmt.Print(BoxH)
-		}
-		fmt.Println(BoxR)
-		fmt.Printf("%s %s%s\n", BoxV, color(ColorBold, "BACKEND BREAKDOWN"), strings.Repeat(" ", width-20))
-		fmt.Print(BoxV)
-		fmt.Printf("  %-12s %-12s %-12s %-12s %s\n", "Backend", "Today", "This Week", "This Month", "% of Total")
-		fmt.Print(BoxV)
-		fmt.Println(strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 10))
+		fmt.Println()
+		fmt.Println(styleSection.Render("BACKEND BREAKDOWN"))
 
 		// Calculate totals by period per backend
 		now := time.Now()
@@ -1385,16 +1397,36 @@ func showCostDashboard() {
 			total += cost
 		}
 
+		rows := [][]string{}
 		for name, be := range backends {
 			if byBackend[name] == 0 {
 				continue
 			}
 			percent := byBackend[name] / total * 100
-			fmt.Printf("%s  %-12s %-12s %-12s %-12s %.0f%%\n", BoxV, be.DisplayName, formatCurrency(backendDaily[name]), formatCurrency(backendWeekly[name]), formatCurrency(backendMonthly[name]), percent)
+			rows = append(rows, []string{
+				be.DisplayName,
+				formatCurrency(backendDaily[name]),
+				formatCurrency(backendWeekly[name]),
+				formatCurrency(backendMonthly[name]),
+				fmt.Sprintf("%.0f%%", percent),
+			})
 		}
+
+		t := table.New().
+			Headers("Backend", "Today", "This Week", "This Month", "%").
+			Rows(rows...).
+			BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == 0 {
+					return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+				}
+				return lipgloss.NewStyle().Padding(0, 1)
+			}).
+			Width(80)
+
+		fmt.Println(t.Render())
 	}
 
-	printBoxBottom(width)
 	fmt.Println()
 }
 
@@ -1414,11 +1446,9 @@ func showCostLog() {
 	}
 
 	fmt.Println()
-	fmt.Println(color(ColorBold, "Recent Usage Records"))
-	fmt.Println(strings.Repeat("-", 100))
-	fmt.Printf("%-20s %-12s %-20s %-12s %-12s %s\n", "Timestamp", "Backend", "Session", "Input", "Output", "Cost")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Println(styleSection.Render("Recent Usage Records"))
 
+	rows := [][]string{}
 	for i := len(records) - 1; i >= start; i-- {
 		r := records[i]
 		sessionID := r.SessionID
@@ -1428,14 +1458,29 @@ func showCostLog() {
 		if sessionID == "" {
 			sessionID = "-"
 		}
-		fmt.Printf("%-20s %-12s %-20s %-12d %-12d %s\n",
+		rows = append(rows, []string{
 			r.Timestamp.Format("2006-01-02 15:04"),
 			r.Backend,
 			sessionID,
-			r.InputTokens,
-			r.OutputTokens,
-			formatCurrency(r.CostUSD))
+			fmt.Sprintf("%d", r.InputTokens),
+			fmt.Sprintf("%d", r.OutputTokens),
+			formatCurrency(r.CostUSD),
+		})
 	}
+
+	t := table.New().
+		Headers("Timestamp", "Backend", "Session", "Input", "Output", "Cost").
+		Rows(rows...).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == 0 {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+			}
+			return lipgloss.NewStyle().Padding(0, 1)
+		}).
+		Width(100)
+
+	fmt.Println(t.Render())
 	fmt.Println()
 }
 
@@ -1465,16 +1510,14 @@ func showBudgetStatus() {
 	cfg := loadConfig()
 	dailyCost, weeklyCost, monthlyCost, _ := calculateCosts(cfg)
 
-	width := 60
-
 	fmt.Println()
-	printBoxed("BUDGET STATUS", width)
+	fmt.Println(styleSection.Render("BUDGET STATUS"))
+	fmt.Println()
 
-	fmt.Printf("%s %-10s %s / %s  %s\n", BoxV, "Daily:", formatCurrency(dailyCost), formatCurrency(cfg.DailyBudget), printProgressBar(dailyCost/cfg.DailyBudget*100, 15))
-	fmt.Printf("%s %-10s %s / %s  %s\n", BoxV, "Weekly:", formatCurrency(weeklyCost), formatCurrency(cfg.WeeklyBudget), printProgressBar(weeklyCost/cfg.WeeklyBudget*100, 15))
-	fmt.Printf("%s %-10s %s / %s  %s\n", BoxV, "Monthly:", formatCurrency(monthlyCost), formatCurrency(cfg.MonthlyBudget), printProgressBar(monthlyCost/cfg.MonthlyBudget*100, 15))
+	renderProgressBar("Daily  ", dailyCost, cfg.DailyBudget)
+	renderProgressBar("Weekly ", weeklyCost, cfg.WeeklyBudget)
+	renderProgressBar("Monthly", monthlyCost, cfg.MonthlyBudget)
 
-	printBoxBottom(width)
 	fmt.Println()
 }
 
@@ -1536,15 +1579,11 @@ func setBudget(period, amountStr string) {
 func runDoctor() {
 	cfg := loadConfig()
 
-	width := 80
-
 	fmt.Println()
-	printBoxed("ENVIRONMENT HEALTH CHECK", width)
+	fmt.Println(styleSection.Render("ENVIRONMENT HEALTH CHECK"))
+	fmt.Println()
 
-	fmt.Printf("%s %-12s %-10s %-10s %s\n", BoxV, "Backend", "Status", "Latency", "Message")
-	fmt.Print(BoxV)
-	fmt.Println(strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 10) + " " + strings.Repeat(BoxH, 10) + " " + strings.Repeat(BoxH, 30))
-
+	rows := [][]string{}
 	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter"} {
 		be := backends[name]
 		result := checkBackendHealth(cfg, be)
@@ -1552,11 +1591,11 @@ func runDoctor() {
 		statusStr := ""
 		switch result.Status {
 		case "ok":
-			statusStr = color(ColorGreen, SymbolReady+" OK")
+			statusStr = styleSuccess.Render("OK")
 		case "skip":
-			statusStr = color(ColorGray, SymbolEmpty+" SKIP")
+			statusStr = styleMuted.Render("SKIP")
 		case "error":
-			statusStr = color(ColorRed, SymbolError+" FAIL")
+			statusStr = styleError.Render("FAIL")
 		}
 
 		latencyStr := "--"
@@ -1564,11 +1603,27 @@ func runDoctor() {
 			latencyStr = formatDuration(result.Latency)
 		}
 
-		msg := truncate(result.Message, 28)
-		fmt.Printf("%s %-12s %-10s %-10s %s\n", BoxV, be.DisplayName, statusStr, latencyStr, msg)
+		rows = append(rows, []string{
+			be.DisplayName,
+			statusStr,
+			latencyStr,
+			truncate(result.Message, 35),
+		})
 	}
 
-	printBoxBottom(width)
+	t := table.New().
+		Headers("Backend", "Status", "Latency", "Message").
+		Rows(rows...).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == 0 {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+			}
+			return lipgloss.NewStyle().Padding(0, 1)
+		}).
+		Width(80)
+
+	fmt.Println(t.Render())
 	fmt.Println()
 }
 
@@ -1585,11 +1640,11 @@ func validateBackend(name string) {
 
 	switch result.Status {
 	case "ok":
-		fmt.Printf("%s %s is healthy (latency: %s)\n", color(ColorGreen, SymbolReady), be.DisplayName, formatDuration(result.Latency))
+		fmt.Printf("%s %s is healthy (latency: %s)\n", styleSuccess.Render("✓"), be.DisplayName, formatDuration(result.Latency))
 	case "skip":
-		fmt.Printf("%s %s - %s\n", color(ColorGray, SymbolEmpty), be.DisplayName, result.Message)
+		fmt.Printf("%s %s - %s\n", styleMuted.Render("-"), be.DisplayName, result.Message)
 	case "error":
-		fmt.Printf("%s %s - %s\n", color(ColorRed, SymbolError), be.DisplayName, result.Message)
+		fmt.Printf("%s %s - %s\n", styleError.Render("✗"), be.DisplayName, result.Message)
 		os.Exit(1)
 	}
 }
@@ -1723,45 +1778,60 @@ func listSessions() {
 		return
 	}
 
-	width := 90
-
 	fmt.Println()
-	printBoxed("SESSIONS", width)
-
-	fmt.Printf("%s %-16s %-12s %-16s %-10s %-10s %s\n", BoxV, "Name", "Backend", "Started", "Prompts", "Cost", "Status")
-	fmt.Print(BoxV)
-	fmt.Println(strings.Repeat(BoxH, 16) + " " + strings.Repeat(BoxH, 12) + " " + strings.Repeat(BoxH, 16) + " " + strings.Repeat(BoxH, 10) + " " + strings.Repeat(BoxH, 10) + " " + strings.Repeat(BoxH, 10))
+	fmt.Println(styleSection.Render("SESSIONS"))
 
 	// Sort by last active (most recent first)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].LastActive.After(sessions[j].LastActive)
 	})
 
+	rows := [][]string{}
 	for _, s := range sessions {
 		marker := " "
 		if current != nil && s.ID == current.ID {
-			marker = color(ColorMagenta, SymbolCurrent)
+			marker = styleAccent.Render(">")
 		}
 
-		statusColor := ColorReset
+		statusStr := s.Status
 		switch s.Status {
 		case "active":
-			statusColor = ColorGreen
+			statusStr = styleSuccess.Render(s.Status)
 		case "paused":
-			statusColor = ColorYellow
+			statusStr = styleWarning.Render(s.Status)
 		case "closed":
-			statusColor = ColorGray
+			statusStr = styleMuted.Render(s.Status)
 		}
 
-		name := truncate(s.Name, 14)
 		started := s.StartTime.Format("01-02 15:04")
 
-		fmt.Printf("%s%s %-14s %-12s %-16s %-10d %-10s %s\n",
-			BoxV, marker, name, backends[s.Backend].DisplayName, started,
-			s.PromptCount, formatCurrency(s.TotalCost), color(statusColor, s.Status))
+		rows = append(rows, []string{
+			marker,
+			truncate(s.Name, 14),
+			backends[s.Backend].DisplayName,
+			started,
+			fmt.Sprintf("%d", s.PromptCount),
+			formatCurrency(s.TotalCost),
+			statusStr,
+		})
 	}
 
-	printBoxBottom(width)
+	t := table.New().
+		Headers("", "Name", "Backend", "Started", "Prompts", "Cost", "Status").
+		Rows(rows...).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == 0 {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+			}
+			if col == 0 {
+				return lipgloss.NewStyle().Width(2)
+			}
+			return lipgloss.NewStyle().Padding(0, 1)
+		}).
+		Width(90)
+
+	fmt.Println(t.Render())
 	fmt.Println()
 }
 
@@ -1818,21 +1888,33 @@ func showSessionInfo(name string) {
 		os.Exit(1)
 	}
 
-	width := 60
-
 	fmt.Println()
-	printBoxed(fmt.Sprintf("SESSION: %s", session.Name), width)
+	fmt.Println(styleSection.Render(fmt.Sprintf("SESSION: %s", session.Name)))
+	fmt.Println()
 
-	fmt.Printf("%s %-12s %s\n", BoxV, "ID:", truncate(session.ID, 40))
-	fmt.Printf("%s %-12s %s\n", BoxV, "Backend:", backends[session.Backend].DisplayName)
-	fmt.Printf("%s %-12s %s\n", BoxV, "Status:", session.Status)
-	fmt.Printf("%s %-12s %s\n", BoxV, "Started:", session.StartTime.Format("2006-01-02 15:04:05"))
-	fmt.Printf("%s %-12s %s\n", BoxV, "Last Active:", session.LastActive.Format("2006-01-02 15:04:05"))
-	fmt.Printf("%s %-12s %s\n", BoxV, "Working Dir:", truncate(session.WorkingDir, 40))
-	fmt.Printf("%s %-12s %d\n", BoxV, "Prompts:", session.PromptCount)
-	fmt.Printf("%s %-12s %s\n", BoxV, "Total Cost:", formatCurrency(session.TotalCost))
+	infoStyle := lipgloss.NewStyle().Width(20).Foreground(colorSubtle)
+	valueStyle := lipgloss.NewStyle()
 
-	printBoxBottom(width)
+	fmt.Printf("%s %s\n", infoStyle.Render("ID:"), valueStyle.Render(truncate(session.ID, 50)))
+	fmt.Printf("%s %s\n", infoStyle.Render("Backend:"), valueStyle.Render(backends[session.Backend].DisplayName))
+
+	statusStr := session.Status
+	switch session.Status {
+	case "active":
+		statusStr = styleSuccess.Render(session.Status)
+	case "paused":
+		statusStr = styleWarning.Render(session.Status)
+	case "closed":
+		statusStr = styleMuted.Render(session.Status)
+	}
+	fmt.Printf("%s %s\n", infoStyle.Render("Status:"), statusStr)
+
+	fmt.Printf("%s %s\n", infoStyle.Render("Started:"), valueStyle.Render(session.StartTime.Format("2006-01-02 15:04:05")))
+	fmt.Printf("%s %s\n", infoStyle.Render("Last Active:"), valueStyle.Render(session.LastActive.Format("2006-01-02 15:04:05")))
+	fmt.Printf("%s %s\n", infoStyle.Render("Working Dir:"), valueStyle.Render(truncate(session.WorkingDir, 50)))
+	fmt.Printf("%s %s\n", infoStyle.Render("Prompts:"), valueStyle.Render(fmt.Sprintf("%d", session.PromptCount)))
+	fmt.Printf("%s %s\n", infoStyle.Render("Total Cost:"), valueStyle.Render(formatCurrency(session.TotalCost)))
+
 	fmt.Println()
 }
 
