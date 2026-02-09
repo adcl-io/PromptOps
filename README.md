@@ -1,14 +1,15 @@
 # PromptOps
 
-AI Model Backend Switcher for Claude Code. Switch between Anthropic Claude, Z.AI (GLM), and Kimi (Moonshot) without reconfiguring your workflow.
+AI Model Backend Switcher for Claude Code. Switch between 10+ LLM providers (OpenAI, DeepSeek, Gemini, Mistral, Anthropic, and more) without reconfiguring your workflow.
 
 ## Features
 
-- **Multiple Backends**: Claude (Anthropic), Z.AI (GLM-4.7), Kimi (Moonshot)
+- **Multiple Backends**: 10 providers including OpenAI, DeepSeek, Gemini, Mistral, Claude, Z.AI, Kimi, Groq, Together AI, and OpenRouter
 - **Seamless Switching**: One command to change backend and launch Claude Code
 - **YOLO Mode**: Skip confirmations and auto-launch for rapid context switching
-- **Secure by Default**: API keys stored with restricted permissions, masked in output
+- **Secure by Default**: API keys stored with restricted permissions (0600), masked in all output
 - **Cross-Platform**: Native binaries for macOS (Intel/Apple Silicon) and Linux
+- **Audit Logging**: Track all backend switches with timestamps
 
 ## Installation
 
@@ -56,14 +57,35 @@ This creates `.env.local` in the current directory with templates for your API k
 Edit `.env.local` and add your keys:
 
 ```bash
-# Get your API key from: https://console.anthropic.com/
+# OpenAI - https://platform.openai.com/
+OPENAI_API_KEY=sk-proj-...
+
+# DeepSeek - https://platform.deepseek.com/
+DEEPSEEK_API_KEY=sk-ds-...
+
+# Google Gemini - https://ai.google.dev/
+GEMINI_API_KEY=AIza...
+
+# Mistral - https://console.mistral.ai/
+MISTRAL_API_KEY=...
+
+# Anthropic Claude - https://console.anthropic.com/
 ANTHROPIC_API_KEY=sk-ant-api03-...
 
-# Get your API key from: https://open.bigmodel.cn/
+# Z.AI (GLM) - https://open.bigmodel.cn/
 ZAI_API_KEY=5869b4b03f...
 
-# Get your API key from: https://platform.moonshot.cn/
+# Kimi (Moonshot) - https://platform.moonshot.cn/
 KIMI_API_KEY=sk-kimi-...
+
+# Groq - https://console.groq.com/
+GROQ_API_KEY=gsk_...
+
+# Together AI - https://api.together.xyz/
+TOGETHER_API_KEY=...
+
+# OpenRouter - https://openrouter.ai/
+OPENROUTER_API_KEY=sk-or-...
 ```
 
 The file is created with `0600` permissions (owner read/write only).
@@ -71,14 +93,19 @@ The file is created with `0600` permissions (owner read/write only).
 ### 3. Switch Backend
 
 ```bash
-# Switch to Kimi
-promptops kimi
+# Tier 1 Backends (Recommended for code/security)
+promptops openai      # OpenAI GPT-4o / GPT-4o-mini / o1
+promptops deepseek    # DeepSeek V3 / R1
+promptops gemini      # Google Gemini 2.5 Pro
+promptops mistral     # Mistral Large / Codestral
+promptops claude      # Anthropic Claude Sonnet 4.5
+promptops zai         # Z.AI GLM-4.7 / GLM-4.5-Air
+promptops kimi        # Kimi K2
 
-# Switch to Z.AI
-promptops zai
-
-# Switch to Claude
-promptops claude
+# Tier 2 Backends (Alternative providers)
+promptops groq        # Groq Llama 3.3 70B / 405B
+promptops together    # Together AI (Llama/Qwen/DeepSeek)
+promptops openrouter  # OpenRouter (200+ models)
 ```
 
 Each command saves the backend to `state` and launches Claude Code with the appropriate environment.
@@ -100,8 +127,17 @@ Shows current backend, API key status (masked), and configuration.
 | `NEXUS_ENV_FILE` | Path to env file | `./.env.local` |
 | `NEXUS_YOLO_MODE` | Global YOLO mode | `false` |
 | `NEXUS_YOLO_MODE_CLAUDE` | YOLO for Claude | `false` |
+| `NEXUS_YOLO_MODE_OPENAI` | YOLO for OpenAI | `false` |
+| `NEXUS_YOLO_MODE_DEEPSEEK` | YOLO for DeepSeek | `false` |
+| `NEXUS_YOLO_MODE_GEMINI` | YOLO for Gemini | `false` |
+| `NEXUS_YOLO_MODE_MISTRAL` | YOLO for Mistral | `false` |
 | `NEXUS_YOLO_MODE_ZAI` | YOLO for Z.AI | `false` |
 | `NEXUS_YOLO_MODE_KIMI` | YOLO for Kimi | `false` |
+| `NEXUS_YOLO_MODE_GROQ` | YOLO for Groq | `false` |
+| `NEXUS_YOLO_MODE_TOGETHER` | YOLO for Together AI | `false` |
+| `NEXUS_YOLO_MODE_OPENROUTER` | YOLO for OpenRouter | `false` |
+| `NEXUS_DEFAULT_BACKEND` | Default backend | `claude` |
+| `NEXUS_VERIFY_ON_SWITCH` | Verify on switch | `true` |
 | `NEXUS_AUDIT_LOG` | Enable audit logging | `true` |
 
 ### YOLO Mode

@@ -528,7 +528,16 @@ func switchBackend(name string, args []string) {
 }
 
 func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
-	cmd := exec.Command("claude", args...)
+	cmdArgs := []string{}
+
+	yolo := cfg.getYoloMode(be.Name)
+	if yolo {
+		cmdArgs = append(cmdArgs, "--permission-mode", "acceptEdits")
+	}
+
+	cmdArgs = append(cmdArgs, args...)
+
+	cmd := exec.Command("claude", cmdArgs...)
 
 	// Build environment
 	env := os.Environ()
