@@ -1,4 +1,6 @@
 # PromptOps
+<img width="997" height="651" alt="image" src="https://github.com/user-attachments/assets/c3f13349-a576-49f9-af51-c8cd56214aa7" />
+
 
 AI Model Backend Switcher for Claude Code. Switch between 10+ LLM providers (OpenAI, DeepSeek, Gemini, Mistral, Anthropic, and more) without reconfiguring your workflow.
 
