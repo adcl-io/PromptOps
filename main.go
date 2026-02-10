@@ -1,8 +1,11 @@
-// promptops - AI Model Backend Switcher
+// Package main implements PromptOps - an AI Model Backend Switcher
+// that provides consistent CLI access to multiple LLM providers.
 package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +23,9 @@ import (
 )
 
 const version = "2.4.0"
+
+// Default timeout for API calls in milliseconds (50 minutes)
+const defaultTimeout = "3000000"
 
 // Lipgloss styles
 var (
@@ -94,21 +100,22 @@ var (
 )
 
 type Backend struct {
-	Name         string
-	DisplayName  string
-	Provider     string
-	Models       string
-	AuthVar      string
-	BaseURL      string
-	Timeout      string
-	HaikuModel   string
-	SonnetModel  string
-	OpusModel    string
-	// Pricing per 1M tokens (USD)
-	InputPrice   float64
-	OutputPrice  float64
+	// Pricing per 1M tokens (USD) - grouped first for alignment
+	InputPrice  float64
+	OutputPrice float64
+	// String fields
+	Name        string
+	DisplayName string
+	Provider    string
+	Models      string
+	AuthVar     string
+	BaseURL     string
+	Timeout     string
+	HaikuModel  string
+	SonnetModel string
+	OpusModel   string
 	// Coding capability tier (S/A/B/C)
-	CodingTier   string
+	CodingTier string
 }
 
 var backends = map[string]Backend{
@@ -129,7 +136,7 @@ var backends = map[string]Backend{
 		Models:      "GLM-4.7 (Sonnet/Opus) / GLM-4.5-Air (Haiku)",
 		AuthVar:     "ZAI_API_KEY",
 		BaseURL:     "https://api.z.ai/api/anthropic",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "glm-4.5-air",
 		SonnetModel: "glm-4.7",
 		OpusModel:   "glm-4.7",
@@ -144,7 +151,7 @@ var backends = map[string]Backend{
 		Models:      "kimi-for-coding",
 		AuthVar:     "KIMI_API_KEY",
 		BaseURL:     "https://api.kimi.com/coding",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "kimi-for-coding",
 		SonnetModel: "kimi-for-coding",
 		OpusModel:   "kimi-for-coding",
@@ -159,7 +166,7 @@ var backends = map[string]Backend{
 		Models:      "DeepSeek-V3 / DeepSeek-R1",
 		AuthVar:     "DEEPSEEK_API_KEY",
 		BaseURL:     "https://api.deepseek.com/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "deepseek-chat",
 		SonnetModel: "deepseek-reasoner",
 		OpusModel:   "deepseek-reasoner",
@@ -174,7 +181,7 @@ var backends = map[string]Backend{
 		Models:      "Gemini 2.5 Pro",
 		AuthVar:     "GEMINI_API_KEY",
 		BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "gemini-2.5-flash",
 		SonnetModel: "gemini-2.5-pro",
 		OpusModel:   "gemini-2.5-pro",
@@ -189,7 +196,7 @@ var backends = map[string]Backend{
 		Models:      "Mistral Large / Codestral",
 		AuthVar:     "MISTRAL_API_KEY",
 		BaseURL:     "https://api.mistral.ai/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "codestral-latest",
 		SonnetModel: "mistral-large-latest",
 		OpusModel:   "mistral-large-latest",
@@ -204,7 +211,7 @@ var backends = map[string]Backend{
 		Models:      "Llama 3.3 70B / 405B",
 		AuthVar:     "GROQ_API_KEY",
 		BaseURL:     "https://api.groq.com/openai/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "llama-3.3-70b-versatile",
 		SonnetModel: "llama-3.3-70b-versatile",
 		OpusModel:   "llama-3.1-405b-reasoning",
@@ -219,7 +226,7 @@ var backends = map[string]Backend{
 		Models:      "Llama / Qwen / DeepSeek",
 		AuthVar:     "TOGETHER_API_KEY",
 		BaseURL:     "https://api.together.xyz/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "meta-llama/Llama-3.3-70B-Instruct-Turbo",
 		SonnetModel: "deepseek-ai/DeepSeek-V3",
 		OpusModel:   "meta-llama/Llama-3.1-405B-Instruct",
@@ -234,7 +241,7 @@ var backends = map[string]Backend{
 		Models:      "200+ models via meta-router",
 		AuthVar:     "OPENROUTER_API_KEY",
 		BaseURL:     "https://openrouter.ai/api/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "google/gemini-flash-1.5",
 		SonnetModel: "anthropic/claude-3.5-sonnet",
 		OpusModel:   "anthropic/claude-3-opus",
@@ -249,13 +256,28 @@ var backends = map[string]Backend{
 		Models:      "GPT-4o / GPT-4o-mini / o1",
 		AuthVar:     "OPENAI_API_KEY",
 		BaseURL:     "https://api.openai.com/v1",
-		Timeout:     "3000000",
+		Timeout:     defaultTimeout,
 		HaikuModel:  "gpt-4o-mini",
 		SonnetModel: "gpt-4o",
 		OpusModel:   "o1",
 		InputPrice:  2.50,
 		OutputPrice: 10.00,
 		CodingTier:  "A",
+	},
+	"ollama": {
+		Name:        "ollama",
+		DisplayName: "Ollama",
+		Provider:    "Ollama (Local)",
+		Models:      "llama3.2 / codellama / mistral",
+		AuthVar:     "OLLAMA_API_KEY",
+		BaseURL:     "http://localhost:11434/v1",
+		Timeout:     defaultTimeout,
+		HaikuModel:  "llama3.2",
+		SonnetModel: "codellama",
+		OpusModel:   "llama3.3",
+		InputPrice:  0.00,
+		OutputPrice: 0.00,
+		CodingTier:  "B",
 	},
 }
 
@@ -277,6 +299,7 @@ type Config struct {
 	YoloModeTogether   bool
 	YoloModeOpenrouter bool
 	YoloModeOpenai     bool
+	YoloModeOllama     bool
 	DefaultBackend     string
 	VerifyOnSwitch     bool
 	AuditEnabled       bool
@@ -329,7 +352,7 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter", "openai":
+	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter", "openai", "ollama":
 		switchBackend(cmd, args)
 	case "status", "current":
 		showStatus()
@@ -372,7 +395,12 @@ func main() {
 func getScriptDir() string {
 	ex, err := os.Executable()
 	if err != nil {
-		ex = os.Args[0]
+		// Fallback to working directory if executable path unavailable
+		wd, err := os.Getwd()
+		if err != nil {
+			return "."
+		}
+		return wd
 	}
 	return filepath.Dir(ex)
 }
@@ -440,6 +468,8 @@ func loadConfig() *Config {
 				cfg.YoloModeOpenrouter = value == "true"
 			case "NEXUS_YOLO_MODE_OPENAI":
 				cfg.YoloModeOpenai = value == "true"
+			case "NEXUS_YOLO_MODE_OLLAMA":
+				cfg.YoloModeOllama = value == "true"
 			case "NEXUS_DEFAULT_BACKEND":
 				cfg.DefaultBackend = value
 			case "NEXUS_VERIFY_ON_SWITCH":
@@ -449,16 +479,22 @@ func loadConfig() *Config {
 			case "NEXUS_DAILY_BUDGET":
 				if v, err := strconv.ParseFloat(value, 64); err == nil {
 					cfg.DailyBudget = v
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: invalid NEXUS_DAILY_BUDGET value '%s': %v\n", value, err)
 				}
 			case "NEXUS_WEEKLY_BUDGET":
 				if v, err := strconv.ParseFloat(value, 64); err == nil {
 					cfg.WeeklyBudget = v
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: invalid NEXUS_WEEKLY_BUDGET value '%s': %v\n", value, err)
 				}
 			case "NEXUS_MONTHLY_BUDGET":
 				if v, err := strconv.ParseFloat(value, 64); err == nil {
 					cfg.MonthlyBudget = v
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: invalid NEXUS_MONTHLY_BUDGET value '%s': %v\n", value, err)
 				}
-			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY":
+			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY":
 				cfg.Keys[key] = value
 			}
 		}
@@ -492,6 +528,8 @@ func (c *Config) getYoloMode(backend string) bool {
 		return c.YoloModeOpenrouter
 	case "openai":
 		return c.YoloModeOpenai
+	case "ollama":
+		return c.YoloModeOllama
 	}
 	return false
 }
@@ -505,17 +543,15 @@ func getCurrentBackend(cfg *Config) string {
 }
 
 func setCurrentBackend(cfg *Config, backend string) error {
-	return os.WriteFile(cfg.StateFile, []byte(backend), 0644)
+	return os.WriteFile(cfg.StateFile, []byte(backend), 0600)
 }
 
 func maskKey(key string) string {
-	if len(key) <= 16 {
-		if len(key) <= 8 {
-			return "****"
-		}
-		return key[:4] + "****" + key[len(key)-4:]
+	if len(key) <= 8 {
+		return "****"
 	}
-	return key[:8] + "..." + key[len(key)-4:]
+	// Consistent masking: always show first 4 and last 4
+	return key[:4] + "****" + key[len(key)-4:]
 }
 
 func auditLog(cfg *Config, msg string) {
@@ -524,6 +560,7 @@ func auditLog(cfg *Config, msg string) {
 	}
 	f, err := os.OpenFile(cfg.AuditLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to open audit log: %v\n", err)
 		return
 	}
 	defer f.Close()
@@ -534,7 +571,9 @@ func auditLog(cfg *Config, msg string) {
 		msg = fmt.Sprintf("[%s] %s", session.Name, msg)
 	}
 
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), msg)
+	if _, err := fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), msg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write audit log: %v\n", err)
+	}
 }
 
 func printLogo(backend string) {
@@ -612,6 +651,13 @@ func printLogo(backend string) {
 		fmt.Println("  ██    ██ ██    ██ ██       ██       ██       ██")
 		fmt.Println("   ██████   ██████  ███████  ███████  ███████  ██")
 		fmt.Println("  OPENAI - GPT-4o / GPT-4o-mini / o1")
+	case "ollama":
+		fmt.Println("   ██████  ██      ██       █████  ███    ███  █████")
+		fmt.Println("  ██    ██ ██      ██      ██   ██ ████  ████ ██   ██")
+		fmt.Println("  ██    ██ ██      ██      ███████ ██ ████ ██ ███████")
+		fmt.Println("  ██    ██ ██      ██      ██   ██ ██  ██  ██ ██   ██")
+		fmt.Println("   ██████  ███████ ███████ ██   ██ ██      ██ ██   ██")
+		fmt.Println("  OLLAMA - LOCAL LLM INFERENCE")
 	}
 }
 
@@ -633,9 +679,10 @@ func drawBox(msg string) {
 }
 
 func animateSwitch(msg string) {
-	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	// ASCII spinner frames - pure ASCII as per CLAUDE.md
+	frames := []string{"|", "/", "-", "\\"}
 	for i := 0; i < 20; i++ {
-		fmt.Printf("\r%s %s", frames[i%10], msg)
+		fmt.Printf("\r%s %s", frames[i%4], msg)
 		time.Sleep(50 * time.Millisecond)
 	}
 	fmt.Printf("\r[OK] %s\n", msg)
@@ -660,41 +707,54 @@ func switchBackend(name string, args []string) {
 		os.Exit(1)
 	}
 
-	// Check for API key
+	// Check for API key (not required for local backends like Ollama)
 	apiKey := cfg.Keys[be.AuthVar]
-	if apiKey == "" {
+	if apiKey == "" && be.Name != "ollama" {
 		fmt.Fprintf(os.Stderr, "Error: %s not set in .env.local\n", be.AuthVar)
 		os.Exit(1)
 	}
 
 	yolo := cfg.getYoloMode(name)
 
-	if !yolo {
-		fmt.Print("\033[H\033[2J") // clear screen
-		fmt.Println()
-	}
-
 	// Animations
 	if !yolo {
-		switch name {
-		case "claude":
-			animateSwitch("Initializing neural pathways...")
-		case "zai":
-			animateSwitch("Reconfiguring quantum matrices...")
-		case "kimi":
-			animateSwitch("Engaging moonshot protocols...")
+		// Animation messages for all backends
+		animMsgs := map[string]string{
+			"claude":     "Initializing neural pathways...",
+			"zai":        "Reconfiguring quantum matrices...",
+			"kimi":       "Engaging moonshot protocols...",
+			"deepseek":   "Activating deep reasoning...",
+			"gemini":     "Initializing Gemini core...",
+			"mistral":    "Loading Mistral engines...",
+			"groq":       "Establishing Groq connection...",
+			"together":   "Connecting to Together AI...",
+			"openrouter": "Routing through OpenRouter...",
+			"openai":     "Connecting to OpenAI...",
+			"ollama":     "Starting local inference engine...",
+		}
+		if msg, ok := animMsgs[name]; ok {
+			animateSwitch(msg)
 		}
 		fmt.Println()
 		printLogo(name)
 		fmt.Println()
 
-		switch name {
-		case "claude":
-			showProgress("Connecting to Anthropic")
-		case "zai":
-			showProgress("Connecting to Z.AI")
-		case "kimi":
-			showProgress("Connecting to Kimi Code")
+		// Progress messages for all backends
+		progressMsgs := map[string]string{
+			"claude":     "Connecting to Anthropic",
+			"zai":        "Connecting to Z.AI",
+			"kimi":       "Connecting to Kimi Code",
+			"deepseek":   "Connecting to DeepSeek",
+			"gemini":     "Connecting to Google AI",
+			"mistral":    "Connecting to Mistral AI",
+			"groq":       "Connecting to Groq",
+			"together":   "Connecting to Together AI",
+			"openrouter": "Connecting to OpenRouter",
+			"openai":     "Connecting to OpenAI",
+			"ollama":     "Connecting to local Ollama",
+		}
+		if msg, ok := progressMsgs[name]; ok {
+			showProgress(msg)
 		}
 	}
 
@@ -704,8 +764,8 @@ func switchBackend(name string, args []string) {
 		os.Exit(1)
 	}
 
-	// Audit log
-	auditLog(cfg, fmt.Sprintf("SWITCH: %s (key: %s)", name, maskKey(apiKey)))
+	// Audit log - never log API keys even masked
+	auditLog(cfg, fmt.Sprintf("SWITCH: %s", name))
 
 	if !yolo {
 		fmt.Println()
@@ -824,14 +884,20 @@ func showStatus() {
 	// Current Backend Section
 	fmt.Println(styleSection.Render("CURRENT BACKEND"))
 	if current != "" {
-		be := backends[current]
-		status := styleCurrent.Render("> " + be.DisplayName)
-		if cfg.getYoloMode(current) {
-			status += styleWarning.Render(" [YOLO]")
+		be, ok := backends[current]
+		if !ok {
+			fmt.Println(styleError.Render("Invalid backend in state: " + current))
+			current = ""
+		} else {
+			status := styleCurrent.Render("> " + be.DisplayName)
+			if cfg.getYoloMode(current) {
+				status += styleWarning.Render(" [YOLO]")
+			}
+			fmt.Println(status)
+			fmt.Println(styleMuted.Render(be.Models))
 		}
-		fmt.Println(status)
-		fmt.Println(styleMuted.Render(be.Models))
-	} else {
+	}
+	if current == "" {
 		fmt.Println(styleMuted.Render("No backend configured"))
 	}
 
@@ -846,11 +912,14 @@ func showStatus() {
 	fmt.Println()
 	fmt.Println(styleSection.Render("AVAILABLE BACKENDS"))
 
-	backendOrder := []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter"}
+	backendOrder := []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter", "ollama"}
 
 	rows := [][]string{}
 	for _, name := range backendOrder {
-		be := backends[name]
+		be, ok := backends[name]
+		if !ok {
+			continue // Skip unknown backends
+		}
 		hasKey := cfg.Keys[be.AuthVar] != ""
 
 		marker := " "
@@ -862,7 +931,11 @@ func showStatus() {
 		extraCol := "--"
 
 		if !hasKey {
-			status = styleMuted.Render("No Key")
+			if be.Name == "ollama" {
+				status = styleSuccess.Render("Local")
+			} else {
+				status = styleMuted.Render("No Key")
+			}
 		} else if checkLatency {
 			result := checkBackendHealth(cfg, be)
 			if result.Status == "ok" {
@@ -1055,6 +1128,7 @@ NEXUS_YOLO_MODE_GROQ=false
 NEXUS_YOLO_MODE_TOGETHER=false
 NEXUS_YOLO_MODE_OPENROUTER=false
 NEXUS_YOLO_MODE_OPENAI=false
+NEXUS_YOLO_MODE_OLLAMA=false
 
 # Global YOLO mode - overrides all backends when true
 NEXUS_YOLO_MODE=false
@@ -1065,7 +1139,7 @@ NEXUS_YOLO_MODE=false
 # Enable audit logging (logs all backend switches to .promptops-audit.log)
 NEXUS_AUDIT_LOG=true
 
-# Default backend when none specified (claude|zai|kimi|deepseek|gemini|mistral|groq|together|openrouter)
+# Default backend when none specified (claude|zai|kimi|deepseek|gemini|mistral|groq|together|openrouter|ollama)
 NEXUS_DEFAULT_BACKEND=claude
 
 # Verify API keys on switch (true|false)
@@ -1121,6 +1195,11 @@ TOGETHER_API_KEY=
 # OpenRouter API Key
 # Get your API key from: https://openrouter.ai/
 OPENROUTER_API_KEY=
+
+# Ollama (optional - local backend, no key required by default)
+# Ollama runs locally at http://localhost:11434
+# Only set this if you've configured Ollama with authentication
+OLLAMA_API_KEY=
 `
 	if err := os.WriteFile(envFile, []byte(content), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating .env.local: %v\n", err)
@@ -1149,6 +1228,9 @@ func showVersion() {
 	fmt.Println("    - groq: Groq Llama 3.3 70B/405B - https://console.groq.com")
 	fmt.Println("    - together: Together AI (Llama/Qwen/DeepSeek) - https://api.together.xyz")
 	fmt.Println("    - openrouter: OpenRouter (200+ models) - https://openrouter.ai")
+	fmt.Println()
+	fmt.Println("  Local (Self-hosted):")
+	fmt.Println("    - ollama: Ollama Local LLM - http://localhost:11434")
 }
 
 func showHelp() {
@@ -1172,6 +1254,9 @@ func showHelp() {
 	fmt.Println("    groq                    Switch to Groq (Llama) and launch")
 	fmt.Println("    together                Switch to Together AI and launch")
 	fmt.Println("    openrouter              Switch to OpenRouter (200+ models) and launch")
+	fmt.Println()
+	fmt.Println("  Local Backends:")
+	fmt.Println("    ollama                  Switch to Ollama (local) and launch")
 	fmt.Println()
 	fmt.Println("  Cost Tracking:")
 	fmt.Println("    cost                    Show cost dashboard with budgets")
@@ -1217,9 +1302,12 @@ func showHelp() {
 }
 
 // For testing - allows running with mocked input
-func readLine(reader *bufio.Reader) string {
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
 
 // ============================================================================
@@ -1238,26 +1326,30 @@ func getCurrentSession(cfg *Config) *Session {
 	}
 
 	sessions := loadSessions(cfg)
-	for _, s := range sessions {
-		if s.ID == sessionID {
-			return &s
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			return &sessions[i]
 		}
 	}
 	return nil
 }
 
 func setCurrentSession(cfg *Config, sessionID string) error {
-	return os.WriteFile(cfg.SessionFile, []byte(sessionID), 0644)
+	return os.WriteFile(cfg.SessionFile, []byte(sessionID), 0600)
 }
 
 func loadSessions(cfg *Config) []Session {
 	data, err := os.ReadFile(cfg.SessionsFile)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read sessions file: %v\n", err)
+		}
 		return []Session{}
 	}
 
 	var sessions []Session
 	if err := json.Unmarshal(data, &sessions); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: sessions file corrupted, starting fresh: %v\n", err)
 		return []Session{}
 	}
 	return sessions
@@ -1271,11 +1363,21 @@ func saveSessions(cfg *Config, sessions []Session) error {
 	return os.WriteFile(cfg.SessionsFile, data, 0600)
 }
 
-func createSession(cfg *Config, name string) *Session {
+// generateSessionID creates a unique session ID with random component
+func generateSessionID(name string) string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to time-based if crypto/rand fails
+		return fmt.Sprintf("%s-%d", name, time.Now().Unix())
+	}
+	return fmt.Sprintf("%s-%d-%s", name, time.Now().Unix(), hex.EncodeToString(b))
+}
+
+func createSession(cfg *Config, name string) (*Session, error) {
 	sessions := loadSessions(cfg)
 
-	// Generate unique ID
-	sessionID := fmt.Sprintf("%s-%d", name, time.Now().Unix())
+	// Generate unique ID with random component to prevent collisions
+	sessionID := generateSessionID(name)
 
 	session := Session{
 		ID:          sessionID,
@@ -1290,10 +1392,14 @@ func createSession(cfg *Config, name string) *Session {
 	}
 
 	sessions = append(sessions, session)
-	saveSessions(cfg, sessions)
-	setCurrentSession(cfg, sessionID)
+	if err := saveSessions(cfg, sessions); err != nil {
+		return nil, fmt.Errorf("failed to save sessions: %w", err)
+	}
+	if err := setCurrentSession(cfg, sessionID); err != nil {
+		return nil, fmt.Errorf("failed to set current session: %w", err)
+	}
 
-	return &session
+	return &session, nil
 }
 
 func getWorkingDir() string {
@@ -1333,13 +1439,21 @@ func logUsage(cfg *Config, backend string, inputTokens, outputTokens int64) {
 	}
 
 	// Append to usage file
-	data, _ := json.Marshal(record)
+	data, err := json.Marshal(record)
+	if err != nil {
+		// Log to stderr but don't fail - usage tracking is best-effort
+		fmt.Fprintf(os.Stderr, "Warning: failed to marshal usage record: %v\n", err)
+		return
+	}
 	f, err := os.OpenFile(cfg.UsageFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to open usage file: %v\n", err)
 		return
 	}
 	defer f.Close()
-	fmt.Fprintln(f, string(data))
+	if _, err := fmt.Fprintln(f, string(data)); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write usage record: %v\n", err)
+	}
 }
 
 func loadUsageRecords(cfg *Config) []UsageRecord {
@@ -1369,6 +1483,8 @@ func calculateCosts(cfg *Config) (daily, weekly, monthly float64, byBackend map[
 
 	now := time.Now()
 	today := now.Truncate(24 * time.Hour)
+	// Week starts on Sunday (Weekday() returns 0 for Sunday)
+	// Note: This is US-centric; some regions start week on Monday
 	weekStart := today.AddDate(0, 0, -int(today.Weekday()))
 	monthStart := today.AddDate(0, 0, -today.Day()+1)
 
@@ -1645,7 +1761,7 @@ func runDoctor() {
 	fmt.Println()
 
 	rows := [][]string{}
-	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter"} {
+	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter", "ollama"} {
 		be := backends[name]
 		result := checkBackendHealth(cfg, be)
 
@@ -1701,18 +1817,18 @@ func validateBackend(name string) {
 
 	switch result.Status {
 	case "ok":
-		fmt.Printf("%s %s is healthy (latency: %s)\n", styleSuccess.Render("✓"), be.DisplayName, formatDuration(result.Latency))
+		fmt.Printf("[OK] %s is healthy (latency: %s)\n", be.DisplayName, formatDuration(result.Latency))
 	case "skip":
-		fmt.Printf("%s %s - %s\n", styleMuted.Render("-"), be.DisplayName, result.Message)
+		fmt.Printf("[--] %s - %s\n", be.DisplayName, result.Message)
 	case "error":
-		fmt.Printf("%s %s - %s\n", styleError.Render("✗"), be.DisplayName, result.Message)
+		fmt.Printf("[FAIL] %s - %s\n", be.DisplayName, result.Message)
 		os.Exit(1)
 	}
 }
 
 func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 	apiKey := cfg.Keys[be.AuthVar]
-	if apiKey == "" {
+	if apiKey == "" && be.Name != "ollama" {
 		return HealthResult{Backend: be.Name, Status: "skip", Message: "No API key configured"}
 	}
 
@@ -1748,6 +1864,18 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		} else {
 			return HealthResult{Backend: be.Name, Status: "skip", Message: "No BaseURL configured"}
 		}
+	case "ollama":
+		// Ollama is local, no auth required
+		if be.BaseURL != "" {
+			url = be.BaseURL + "/models"
+			req, err = http.NewRequest("GET", url, nil)
+			// Ollama typically doesn't require auth for local use
+			if apiKey != "" {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+		} else {
+			return HealthResult{Backend: be.Name, Status: "skip", Message: "No BaseURL configured"}
+		}
 	default:
 		// For other backends, just check if we can resolve the base URL
 		if be.BaseURL != "" {
@@ -1778,7 +1906,7 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		return HealthResult{Backend: be.Name, Status: "ok", Latency: latency, Message: "Connection verified"}
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	return HealthResult{Backend: be.Name, Status: "error", Latency: latency, Message: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 50))}
 }
 
@@ -1836,8 +1964,16 @@ func startSession(name string) {
 		}
 	}
 
-	session := createSession(cfg, name)
-	fmt.Printf("[OK] Started session '%s' with %s backend\n", session.Name, backends[session.Backend].DisplayName)
+	session, err := createSession(cfg, name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	be, ok := backends[session.Backend]
+	if !ok {
+		be = Backend{DisplayName: session.Backend}
+	}
+	fmt.Printf("[OK] Started session '%s' with %s backend\n", session.Name, be.DisplayName)
 }
 
 func listSessions() {
@@ -1877,10 +2013,16 @@ func listSessions() {
 
 		started := s.StartTime.Format("01-02 15:04")
 
+		// Safe backend name lookup
+		backendName := s.Backend
+		if be, ok := backends[s.Backend]; ok {
+			backendName = be.DisplayName
+		}
+
 		rows = append(rows, []string{
 			marker,
 			truncate(s.Name, 14),
-			backends[s.Backend].DisplayName,
+			backendName,
 			started,
 			fmt.Sprintf("%d", s.PromptCount),
 			formatCurrency(s.TotalCost),
@@ -1926,7 +2068,12 @@ func resumeSession(name string) {
 			// Also switch to the session's backend
 			setCurrentBackend(cfg, s.Backend)
 
-			fmt.Printf("[OK] Resumed session '%s' (%s backend)\n", s.Name, backends[s.Backend].DisplayName)
+			// Safe backend name lookup
+			backendName := s.Backend
+			if be, ok := backends[s.Backend]; ok {
+				backendName = be.DisplayName
+			}
+			fmt.Printf("[OK] Resumed session '%s' (%s backend)\n", s.Name, backendName)
 			return
 		}
 	}
@@ -2003,7 +2150,9 @@ func closeSession(name string) {
 
 			// If this was the current session, clear it
 			if current != nil && s.ID == current.ID {
-				os.Remove(cfg.SessionFile)
+				if err := os.Remove(cfg.SessionFile); err != nil && !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "Warning: failed to remove session file: %v\n", err)
+				}
 			}
 
 			fmt.Printf("[OK] Closed session '%s'\n", s.Name)
