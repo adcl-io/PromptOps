@@ -52,6 +52,9 @@ sudo mv promptops /usr/local/bin/
 
 ## Quick Start
 
+<img width="1553" height="732" alt="image" src="https://github.com/user-attachments/assets/452d6ff0-2d28-4191-a0a2-c33db5e57aae" />
+
+
 ### 1. Initialize Configuration
 
 ```bash
@@ -81,7 +84,7 @@ MISTRAL_API_KEY=...
 ANTHROPIC_API_KEY=sk-ant-api03-...
 
 # Z.AI (GLM) - https://open.bigmodel.cn/
-ZAI_API_KEY=5869b4b03f...
+ZAI_API_KEY=58...
 
 # Kimi (Moonshot) - https://platform.moonshot.cn/
 KIMI_API_KEY=sk-kimi-...
