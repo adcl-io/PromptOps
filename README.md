@@ -2,11 +2,11 @@
 <img width="997" height="651" alt="image" src="https://github.com/user-attachments/assets/c3f13349-a576-49f9-af51-c8cd56214aa7" />
 
 
-AI Model Backend Switcher for Claude Code. Switch between 10+ LLM providers (OpenAI, DeepSeek, Gemini, Mistral, Anthropic, and more) without reconfiguring your workflow.
+AI Model Backend Switcher for Claude Code. Switch between 10+ LLM providers including local models via Ollama (OpenAI, DeepSeek, Gemini, Mistral, Anthropic, and more) without reconfiguring your workflow.
 
 ## Features
 
-- **Multiple Backends**: 10 providers including OpenAI, DeepSeek, Gemini, Mistral, Claude, Z.AI, Kimi, Groq, Together AI, and OpenRouter
+- **Multiple Backends**: 11 providers including OpenAI, DeepSeek, Gemini, Mistral, Claude, Z.AI, Kimi, Groq, Together AI, OpenRouter, and local models via Ollama
 - **Seamless Switching**: One command to change backend and launch Claude Code
 - **YOLO Mode**: Skip confirmations and auto-launch for rapid context switching
 - **Secure by Default**: API keys stored with restricted permissions (0600), masked in all output
@@ -117,6 +117,9 @@ promptops kimi        # Kimi K2
 promptops groq        # Groq Llama 3.3 70B / 405B
 promptops together    # Together AI (Llama/Qwen/DeepSeek)
 promptops openrouter  # OpenRouter (200+ models)
+
+# Local Backends (Self-hosted)
+promptops ollama      # Ollama local models
 ```
 
 Each command saves the backend to `state` and launches Claude Code with the appropriate environment.
@@ -147,7 +150,11 @@ Shows current backend, API key status (masked), and configuration.
 | `NEXUS_YOLO_MODE_GROQ` | YOLO for Groq | `false` |
 | `NEXUS_YOLO_MODE_TOGETHER` | YOLO for Together AI | `false` |
 | `NEXUS_YOLO_MODE_OPENROUTER` | YOLO for OpenRouter | `false` |
+| `NEXUS_YOLO_MODE_OLLAMA` | YOLO for Ollama | `false` |
 | `NEXUS_DEFAULT_BACKEND` | Default backend | `claude` |
+| `OLLAMA_HAIKU_MODEL` | Ollama model for haiku | `llama3.2` |
+| `OLLAMA_SONNET_MODEL` | Ollama model for sonnet | `codellama` |
+| `OLLAMA_OPUS_MODEL` | Ollama model for opus | `llama3.3` |
 | `NEXUS_VERIFY_ON_SWITCH` | Verify on switch | `true` |
 | `NEXUS_AUDIT_LOG` | Enable audit logging | `true` |
 
@@ -178,6 +185,7 @@ NEXUS_YOLO_MODE_OPENAI=true
 | `promptops groq` | Switch to Groq and launch |
 | `promptops together` | Switch to Together AI and launch |
 | `promptops openrouter` | Switch to OpenRouter and launch |
+| `promptops ollama` | Switch to Ollama (local) and launch |
 | `promptops run` | Launch with current backend |
 | `promptops status` | Show configuration |
 | `promptops init` | Create `.env.local` template |
@@ -200,6 +208,9 @@ promptops openai
 
 # Use Groq for ultra-fast responses
 promptops groq
+
+# Use local Ollama models (no API key required)
+promptops ollama
 
 # Launch without switching (uses current backend)
 promptops run
@@ -275,6 +286,35 @@ Uses Kimi Code API for coding-optimized models:
 - Base URL: `https://api.kimi.com/coding`
 - Models: kimi-for-coding
 
+### Local Backends (Self-hosted)
+
+#### Ollama
+
+Run local LLMs with Ollama. No API key required.
+
+**Setup:**
+1. Install Ollama: https://ollama.com/
+2. Pull models: `ollama pull llama3.2`
+3. Run: `./promptops ollama`
+
+**Default Models:**
+- Haiku: `llama3.2`
+- Sonnet: `codellama`
+- Opus: `llama3.3`
+
+**Custom Models:**
+
+Configure custom models in `.env.local`:
+
+```bash
+OLLAMA_HAIKU_MODEL=phi3:latest
+OLLAMA_SONNET_MODEL=llama3.2:latest
+OLLAMA_OPUS_MODEL=llama3.2:latest
+```
+
+**How it works:**
+PromptOps starts an Anthropic-to-OpenAI translation proxy on port 18080 that allows Claude Code to communicate with Ollama's OpenAI-compatible API.
+
 ### Tier 2 Backends (Alternative Providers)
 
 #### Groq
@@ -306,7 +346,9 @@ Unified API for 200+ models:
 ├── state                   # Current backend name (e.g., "kimi")
 ├── .promptops-audit.log    # Audit log (0600 permissions)
 ├── promptops               # Binary
-├── main.go                 # Source code
+├── main.go                 # CLI entry point
+├── proxy.go                # Ollama Anthropic-to-OpenAI proxy
+├── proxy_test.go           # Proxy tests
 ├── Makefile                # Build automation
 └── CLAUDE.md               # Project guidelines
 ```
