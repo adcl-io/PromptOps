@@ -78,6 +78,11 @@ var allowedEnvVars = map[string]bool{
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL":      true,
 	"ANTHROPIC_DEFAULT_SONNET_MODEL":     true,
 	"ANTHROPIC_DEFAULT_OPUS_MODEL":       true,
+	// Ollama specific variables (for local LLM configuration)
+	"OLLAMA_API_KEY":                     true,
+	"OLLAMA_HAIKU_MODEL":                 true,
+	"OLLAMA_SONNET_MODEL":                true,
+	"OLLAMA_OPUS_MODEL":                  true,
 }
 
 // sanitizeArgs removes potentially dangerous characters from command arguments
@@ -390,6 +395,8 @@ type Config struct {
 	DailyBudget   float64
 	WeeklyBudget  float64
 	MonthlyBudget float64
+	// Ollama model configuration (allows user to specify local models)
+	OllamaModels map[string]string // haiku/sonnet/opus -> model name
 }
 
 // UsageRecord represents a single API usage entry
@@ -518,6 +525,7 @@ func loadConfig() *Config {
 		SessionFile:    filepath.Join(dir, "session"),
 		Keys:           make(map[string]string),
 		YoloModes:      make(map[string]bool),
+		OllamaModels:   make(map[string]string),
 		DefaultBackend: "claude",
 		VerifyOnSwitch: true,
 		AuditEnabled:   true,
@@ -594,6 +602,13 @@ func loadConfig() *Config {
 				}
 			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY":
 				cfg.Keys[key] = value
+			// Ollama model configuration - allow custom local models
+			case "OLLAMA_HAIKU_MODEL":
+				cfg.OllamaModels["haiku"] = value
+			case "OLLAMA_SONNET_MODEL":
+				cfg.OllamaModels["sonnet"] = value
+			case "OLLAMA_OPUS_MODEL":
+				cfg.OllamaModels["opus"] = value
 			}
 		}
 	}
@@ -936,23 +951,70 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 	apiKey := cfg.Keys[be.AuthVar]
 	if apiKey != "" {
 		env = append(env, fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=%s", apiKey))
+	} else if be.Name == "ollama" {
+		// Ollama doesn't require an API key, but Claude Code still needs
+		// ANTHROPIC_AUTH_TOKEN to be set when using a custom base URL
+		env = append(env, "ANTHROPIC_AUTH_TOKEN=ollama")
 	}
 
 	// Set backend-specific vars
+	baseURL := be.BaseURL
 	if be.BaseURL != "" {
-		env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", be.BaseURL))
 		env = append(env, fmt.Sprintf("API_TIMEOUT_MS=%d", be.Timeout.Milliseconds()))
-		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_HAIKU_MODEL=%s", be.HaikuModel))
-		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_SONNET_MODEL=%s", be.SonnetModel))
-		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_OPUS_MODEL=%s", be.OpusModel))
+
+		// Use custom Ollama models if configured, otherwise use defaults
+		haikuModel := be.HaikuModel
+		sonnetModel := be.SonnetModel
+		opusModel := be.OpusModel
+
+		if be.Name == "ollama" && cfg.OllamaModels != nil {
+			if m, ok := cfg.OllamaModels["haiku"]; ok && m != "" {
+				haikuModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.OllamaModels["sonnet"]; ok && m != "" {
+				sonnetModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.OllamaModels["opus"]; ok && m != "" {
+				opusModel = strings.TrimSpace(m)
+			}
+		}
+
+		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_HAIKU_MODEL=%s", haikuModel))
+		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_SONNET_MODEL=%s", sonnetModel))
+		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_OPUS_MODEL=%s", opusModel))
 	}
+
+	// For Ollama, start a proxy to translate Anthropic API to OpenAI format
+	var proxy *OllamaProxy
+	if be.Name == "ollama" {
+		proxy = NewOllamaProxy(baseURL, buildModelMap(cfg))
+		if err := proxy.Start(18080); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting Ollama proxy: %v\n", err)
+			os.Exit(1)
+		}
+		// Point Claude Code to our proxy instead of directly to Ollama
+		baseURL = "http://localhost:18080"
+		if !yolo {
+			fmt.Println("[OK] Started Anthropic-to-OpenAI proxy on port 18080")
+		}
+	}
+
+	// Set the base URL (may have been changed to proxy for Ollama)
+	env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", baseURL))
 
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+
+	// Stop the proxy if it was started
+	if proxy != nil {
+		proxy.Stop()
+	}
+
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
@@ -960,6 +1022,41 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 		fmt.Fprintf(os.Stderr, "Error launching claude: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// buildModelMap creates a mapping from Anthropic model names to Ollama model names
+func buildModelMap(cfg *Config) map[string]string {
+	modelMap := map[string]string{
+		"llama3.2":           "llama3.2:latest",
+		"llama3.2:latest":    "llama3.2:latest",
+		"llama3.2:3b":        "llama3.2:3b",
+		"codellama":          "codellama:latest",
+		"codellama:latest":   "codellama:latest",
+		"phi3":               "phi3:latest",
+		"phi3:latest":        "phi3:latest",
+		"mistral":            "mistral:latest",
+		"mistral:latest":     "mistral:latest",
+		"llama3.3":           "llama3.3:latest",
+		"llama3.3:latest":    "llama3.3:latest",
+	}
+
+	// Add custom models from config
+	if cfg.OllamaModels != nil {
+		if m, ok := cfg.OllamaModels["haiku"]; ok && m != "" {
+			modelMap[m] = strings.TrimSpace(m)
+			modelMap["haiku"] = strings.TrimSpace(m)
+		}
+		if m, ok := cfg.OllamaModels["sonnet"]; ok && m != "" {
+			modelMap[m] = strings.TrimSpace(m)
+			modelMap["sonnet"] = strings.TrimSpace(m)
+		}
+		if m, ok := cfg.OllamaModels["opus"]; ok && m != "" {
+			modelMap[m] = strings.TrimSpace(m)
+			modelMap["opus"] = strings.TrimSpace(m)
+		}
+	}
+
+	return modelMap
 }
 
 func runClaude(args []string) {
@@ -1324,6 +1421,14 @@ OPENROUTER_API_KEY=
 # Ollama runs locally at http://localhost:11434
 # Only set this if you've configured Ollama with authentication
 OLLAMA_API_KEY=
+
+# Ollama Model Configuration (optional - defaults shown below)
+# Set these to use specific local models instead of the defaults
+# Defaults: llama3.2 (haiku), codellama (sonnet), llama3.3 (opus)
+# Examples: qwen2.5-coder, phi4, mistral, gemma2, deepseek-coder
+# OLLAMA_HAIKU_MODEL=llama3.2
+# OLLAMA_SONNET_MODEL=codellama
+# OLLAMA_OPUS_MODEL=llama3.3
 `
 	if err := os.WriteFile(envFile, []byte(content), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating .env.local: %v\n", err)

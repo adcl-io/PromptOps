@@ -241,3 +241,64 @@ func TestTruncateUnicode(t *testing.T) {
 		t.Errorf("Expected truncated mixed string to have 12 runes, got %d", len([]rune(truncated)))
 	}
 }
+
+func TestOllamaEnvVarsWhitelisted(t *testing.T) {
+	// Verify Ollama-specific environment variables are in the whitelist
+	ollamaVars := []string{
+		"OLLAMA_API_KEY",
+		"OLLAMA_HAIKU_MODEL",
+		"OLLAMA_SONNET_MODEL",
+		"OLLAMA_OPUS_MODEL",
+	}
+
+	for _, v := range ollamaVars {
+		if !allowedEnvVars[v] {
+			t.Errorf("Ollama environment variable %s is not whitelisted in allowedEnvVars", v)
+		}
+	}
+}
+
+func TestFilterEnvironmentAllowsOllamaVars(t *testing.T) {
+	// Test that filterEnvironment correctly passes Ollama variables
+	testEnv := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"OLLAMA_HAIKU_MODEL=llama3.2",
+		"OLLAMA_SONNET_MODEL=codellama",
+		"OLLAMA_OPUS_MODEL=llama3.3",
+		"ANTHROPIC_API_KEY=sk-ant-test123",
+		"SOME_OTHER_VAR=should_be_filtered",
+	}
+
+	filtered := filterEnvironment(testEnv)
+
+	// Build a map for easier checking
+	filteredMap := make(map[string]string)
+	for _, e := range filtered {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			filteredMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Check that Ollama vars are preserved
+	if filteredMap["OLLAMA_HAIKU_MODEL"] != "llama3.2" {
+		t.Errorf("OLLAMA_HAIKU_MODEL should be preserved, got %q", filteredMap["OLLAMA_HAIKU_MODEL"])
+	}
+	if filteredMap["OLLAMA_SONNET_MODEL"] != "codellama" {
+		t.Errorf("OLLAMA_SONNET_MODEL should be preserved, got %q", filteredMap["OLLAMA_SONNET_MODEL"])
+	}
+	if filteredMap["OLLAMA_OPUS_MODEL"] != "llama3.3" {
+		t.Errorf("OLLAMA_OPUS_MODEL should be preserved, got %q", filteredMap["OLLAMA_OPUS_MODEL"])
+	}
+
+	// Check that standard vars are preserved
+	if filteredMap["PATH"] != "/usr/bin" {
+		t.Error("PATH should be preserved")
+	}
+
+	// Check that non-whitelisted vars are filtered
+	if _, exists := filteredMap["SOME_OTHER_VAR"]; exists {
+		t.Error("SOME_OTHER_VAR should be filtered out")
+	}
+}
