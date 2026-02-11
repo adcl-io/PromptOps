@@ -71,6 +71,13 @@ var allowedEnvVars = map[string]bool{
 	"TMP":       true,
 	"SSH_AUTH_SOCK": true,
 	"SSH_AGENT_LAUNCHER": true,
+	// Anthropic/Claude specific variables
+	"ANTHROPIC_AUTH_TOKEN":               true,
+	"ANTHROPIC_BASE_URL":                 true,
+	"API_TIMEOUT_MS":                     true,
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL":      true,
+	"ANTHROPIC_DEFAULT_SONNET_MODEL":     true,
+	"ANTHROPIC_DEFAULT_OPUS_MODEL":       true,
 }
 
 // sanitizeArgs removes potentially dangerous characters from command arguments
@@ -923,8 +930,13 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 	// Build environment with whitelist approach
 	env := filterEnvironment(os.Environ())
 
-	// Set auth token
-	env = append(env, fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=%s", cfg.Keys[be.AuthVar]))
+	// Set auth token for Claude Code
+	// Note: For backends like Ollama that don't require API keys, we still need
+	// to set ANTHROPIC_AUTH_TOKEN for Claude Code itself
+	apiKey := cfg.Keys[be.AuthVar]
+	if apiKey != "" {
+		env = append(env, fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=%s", apiKey))
+	}
 
 	// Set backend-specific vars
 	if be.BaseURL != "" {
