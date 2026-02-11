@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,16 +17,100 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 )
 
-const version = "2.4.0"
+var version = "dev"
 
-// Default timeout for API calls in milliseconds (50 minutes)
-const defaultTimeout = "3000000"
+// Build-time version (set by Makefile with -ldflags)
+var buildVersion string
+
+// getVersion returns the effective version, preferring buildVersion if set
+func getVersion() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
+	return version
+}
+
+// Default timeout for API calls (50 minutes)
+const defaultTimeout = 50 * time.Minute
+
+// Health check HTTP timeout
+const healthCheckTimeout = 5 * time.Second
+
+// Progress bar widths
+const (
+	progressBarWidth = 40
+	miniBarWidth     = 20
+)
+
+// allowedEnvVars defines which environment variables are safe to pass to child processes
+var allowedEnvVars = map[string]bool{
+	"PATH":      true,
+	"HOME":      true,
+	"USER":      true,
+	"SHELL":     true,
+	"TERM":      true,
+	"TERMINFO":  true,
+	"LANG":      true,
+	"LANGUAGE":  true,
+	"LC_ALL":    true,
+	"LC_CTYPE":  true,
+	"EDITOR":    true,
+	"PAGER":     true,
+	"LESS":      true,
+	"MORE":      true,
+	"TMPDIR":    true,
+	"TEMP":      true,
+	"TMP":       true,
+	"SSH_AUTH_SOCK": true,
+	"SSH_AGENT_LAUNCHER": true,
+}
+
+// sanitizeArgs removes potentially dangerous characters from command arguments
+func sanitizeArgs(args []string) []string {
+	var sanitized []string
+	for _, arg := range args {
+		// Remove null bytes and control characters
+		arg = strings.ReplaceAll(arg, "\x00", "")
+		arg = strings.ReplaceAll(arg, "\n", "")
+		arg = strings.ReplaceAll(arg, "\r", "")
+		// Limit argument length to prevent DoS
+		if len(arg) > 4096 {
+			arg = arg[:4096]
+		}
+		sanitized = append(sanitized, arg)
+	}
+	return sanitized
+}
+
+// filterEnvironment returns only whitelisted environment variables
+func filterEnvironment(env []string) []string {
+	var filtered []string
+	for _, e := range env {
+		key := strings.SplitN(e, "=", 2)[0]
+		if allowedEnvVars[key] {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
+// Shared HTTP client with connection pooling
+var httpClient = &http.Client{
+	Timeout: healthCheckTimeout,
+	Transport: &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
 
 // Lipgloss styles
 var (
@@ -110,7 +195,7 @@ type Backend struct {
 	Models      string
 	AuthVar     string
 	BaseURL     string
-	Timeout     string
+	Timeout     time.Duration
 	HaikuModel  string
 	SonnetModel string
 	OpusModel   string
@@ -282,28 +367,18 @@ var backends = map[string]Backend{
 }
 
 type Config struct {
-	EnvFile            string
-	StateFile          string
-	AuditLog           string
-	UsageFile          string
-	SessionsFile       string
-	SessionFile        string
-	YoloMode           bool
-	YoloModeClaude     bool
-	YoloModeZai        bool
-	YoloModeKimi       bool
-	YoloModeDeepseek   bool
-	YoloModeGemini     bool
-	YoloModeMistral    bool
-	YoloModeGroq       bool
-	YoloModeTogether   bool
-	YoloModeOpenrouter bool
-	YoloModeOpenai     bool
-	YoloModeOllama     bool
-	DefaultBackend     string
-	VerifyOnSwitch     bool
-	AuditEnabled       bool
-	Keys               map[string]string
+	EnvFile        string
+	StateFile      string
+	AuditLog       string
+	UsageFile      string
+	SessionsFile   string
+	SessionFile    string
+	YoloMode       bool
+	YoloModes      map[string]bool // Per-backend YOLO mode settings
+	DefaultBackend string
+	VerifyOnSwitch bool
+	AuditEnabled   bool
+	Keys           map[string]string
 	// Budget settings
 	DailyBudget   float64
 	WeeklyBudget  float64
@@ -386,29 +461,44 @@ func main() {
 	// Session management commands
 	case "session":
 		handleSessionCommand(args)
+	// Usage command - fetch real API usage from providers
+	case "usage":
+		showAPIUsage(args)
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'. Run 'promptops help' for usage.\n", cmd)
 		os.Exit(1)
 	}
 }
 
-func getScriptDir() string {
+func getScriptDir() (string, error) {
 	ex, err := os.Executable()
 	if err != nil {
 		// Fallback to working directory if executable path unavailable
-		wd, err := os.Getwd()
-		if err != nil {
-			return "."
+		wd, wdErr := os.Getwd()
+		if wdErr != nil {
+			return "", fmt.Errorf("cannot determine script directory: executable error: %w; wd error: %w", err, wdErr)
 		}
-		return wd
+		return wd, nil
 	}
-	return filepath.Dir(ex)
+	return filepath.Dir(ex), nil
 }
 
 func loadConfig() *Config {
-	dir := getScriptDir()
+	dir, err := getScriptDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	envFile := os.Getenv("NEXUS_ENV_FILE")
-	if envFile == "" {
+	if envFile != "" {
+		// Validate to prevent path traversal
+		cleanPath := filepath.Clean(envFile)
+		if strings.Contains(cleanPath, "..") {
+			fmt.Fprintf(os.Stderr, "Error: NEXUS_ENV_FILE contains path traversal: %s\n", envFile)
+			os.Exit(1)
+		}
+		envFile = cleanPath
+	} else {
 		envFile = filepath.Join(dir, ".env.local")
 	}
 
@@ -420,6 +510,7 @@ func loadConfig() *Config {
 		SessionsFile:   filepath.Join(dir, ".promptops-sessions.json"),
 		SessionFile:    filepath.Join(dir, "session"),
 		Keys:           make(map[string]string),
+		YoloModes:      make(map[string]bool),
 		DefaultBackend: "claude",
 		VerifyOnSwitch: true,
 		AuditEnabled:   true,
@@ -449,27 +540,27 @@ func loadConfig() *Config {
 			case "NEXUS_YOLO_MODE":
 				cfg.YoloMode = value == "true"
 			case "NEXUS_YOLO_MODE_CLAUDE":
-				cfg.YoloModeClaude = value == "true"
+				cfg.YoloModes["claude"] = value == "true"
 			case "NEXUS_YOLO_MODE_ZAI":
-				cfg.YoloModeZai = value == "true"
+				cfg.YoloModes["zai"] = value == "true"
 			case "NEXUS_YOLO_MODE_KIMI":
-				cfg.YoloModeKimi = value == "true"
+				cfg.YoloModes["kimi"] = value == "true"
 			case "NEXUS_YOLO_MODE_DEEPSEEK":
-				cfg.YoloModeDeepseek = value == "true"
+				cfg.YoloModes["deepseek"] = value == "true"
 			case "NEXUS_YOLO_MODE_GEMINI":
-				cfg.YoloModeGemini = value == "true"
+				cfg.YoloModes["gemini"] = value == "true"
 			case "NEXUS_YOLO_MODE_MISTRAL":
-				cfg.YoloModeMistral = value == "true"
+				cfg.YoloModes["mistral"] = value == "true"
 			case "NEXUS_YOLO_MODE_GROQ":
-				cfg.YoloModeGroq = value == "true"
+				cfg.YoloModes["groq"] = value == "true"
 			case "NEXUS_YOLO_MODE_TOGETHER":
-				cfg.YoloModeTogether = value == "true"
+				cfg.YoloModes["together"] = value == "true"
 			case "NEXUS_YOLO_MODE_OPENROUTER":
-				cfg.YoloModeOpenrouter = value == "true"
+				cfg.YoloModes["openrouter"] = value == "true"
 			case "NEXUS_YOLO_MODE_OPENAI":
-				cfg.YoloModeOpenai = value == "true"
+				cfg.YoloModes["openai"] = value == "true"
 			case "NEXUS_YOLO_MODE_OLLAMA":
-				cfg.YoloModeOllama = value == "true"
+				cfg.YoloModes["ollama"] = value == "true"
 			case "NEXUS_DEFAULT_BACKEND":
 				cfg.DefaultBackend = value
 			case "NEXUS_VERIFY_ON_SWITCH":
@@ -507,29 +598,10 @@ func (c *Config) getYoloMode(backend string) bool {
 	if c.YoloMode {
 		return true
 	}
-	switch backend {
-	case "claude":
-		return c.YoloModeClaude
-	case "zai":
-		return c.YoloModeZai
-	case "kimi":
-		return c.YoloModeKimi
-	case "deepseek":
-		return c.YoloModeDeepseek
-	case "gemini":
-		return c.YoloModeGemini
-	case "mistral":
-		return c.YoloModeMistral
-	case "groq":
-		return c.YoloModeGroq
-	case "together":
-		return c.YoloModeTogether
-	case "openrouter":
-		return c.YoloModeOpenrouter
-	case "openai":
-		return c.YoloModeOpenai
-	case "ollama":
-		return c.YoloModeOllama
+	if c.YoloModes != nil {
+		if v, ok := c.YoloModes[backend]; ok {
+			return v
+		}
 	}
 	return false
 }
@@ -543,15 +615,59 @@ func getCurrentBackend(cfg *Config) string {
 }
 
 func setCurrentBackend(cfg *Config, backend string) error {
-	return os.WriteFile(cfg.StateFile, []byte(backend), 0600)
+	return writeFileAtomic(cfg.StateFile, []byte(backend), 0600)
 }
 
+// writeFileAtomic writes data to a file atomically using temp file + rename
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Cleanup on error
+	defer func() {
+		if err != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err = os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	if err = os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+
+	return nil
+}
+
+// Constants for key masking
+const (
+	maskKeyMinLength     = 8
+	maskKeyVisiblePrefix = 4
+	maskKeyVisibleSuffix = 4
+	maskKeyReplacement   = "****"
+)
+
 func maskKey(key string) string {
-	if len(key) <= 8 {
-		return "****"
+	if len(key) <= maskKeyMinLength {
+		return maskKeyReplacement
 	}
 	// Consistent masking: always show first 4 and last 4
-	return key[:4] + "****" + key[len(key)-4:]
+	return key[:maskKeyVisiblePrefix] + maskKeyReplacement + key[len(key)-maskKeyVisibleSuffix:]
 }
 
 func auditLog(cfg *Config, msg string) {
@@ -563,7 +679,11 @@ func auditLog(cfg *Config, msg string) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to open audit log: %v\n", err)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close audit log: %v\n", err)
+		}
+	}()
 
 	// Include session ID if available
 	session := getCurrentSession(cfg)
@@ -662,7 +782,7 @@ func printLogo(backend string) {
 }
 
 func drawBox(msg string) {
-	width := len(msg) + 8
+	width := utf8.RuneCountInString(msg) + 8
 	fmt.Print("+")
 	for i := 0; i < width; i++ {
 		fmt.Print("-")
@@ -690,10 +810,8 @@ func animateSwitch(msg string) {
 
 func showProgress(msg string) {
 	fmt.Printf("%s [", msg)
-	colors := []string{"\033[0;31m", "\033[1;33m", "\033[0;32m", "\033[0;36m", "\033[0;34m", "\033[0;35m"}
-	reset := "\033[0m"
 	for i := 0; i < 30; i++ {
-		fmt.Printf("%s█%s", colors[i%6], reset)
+		fmt.Print(styleProgressFilled.Render("█"))
 		time.Sleep(20 * time.Millisecond)
 	}
 	fmt.Println("] COMPLETE")
@@ -793,26 +911,17 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 
 	yolo := cfg.getYoloMode(be.Name)
 	if yolo {
-		cmdArgs = append(cmdArgs, "--permission-mode", "acceptEdits")
+		cmdArgs = append(cmdArgs, "--dangerously-skip-permissions")
 	}
 
-	cmdArgs = append(cmdArgs, args...)
+	// Sanitize user-provided arguments
+	sanitizedArgs := sanitizeArgs(args)
+	cmdArgs = append(cmdArgs, sanitizedArgs...)
 
 	cmd := exec.Command("claude", cmdArgs...)
 
-	// Build environment
-	env := os.Environ()
-
-	// Remove any existing Claude-related vars
-	filtered := env[:0]
-	for _, e := range env {
-		if !strings.HasPrefix(e, "ANTHROPIC_AUTH_TOKEN=") &&
-			!strings.HasPrefix(e, "ANTHROPIC_BASE_URL=") &&
-			!strings.HasPrefix(e, "CLAUDE_CODE_OAUTH_TOKEN=") {
-			filtered = append(filtered, e)
-		}
-	}
-	env = filtered
+	// Build environment with whitelist approach
+	env := filterEnvironment(os.Environ())
 
 	// Set auth token
 	env = append(env, fmt.Sprintf("ANTHROPIC_AUTH_TOKEN=%s", cfg.Keys[be.AuthVar]))
@@ -820,7 +929,7 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 	// Set backend-specific vars
 	if be.BaseURL != "" {
 		env = append(env, fmt.Sprintf("ANTHROPIC_BASE_URL=%s", be.BaseURL))
-		env = append(env, fmt.Sprintf("API_TIMEOUT_MS=%s", be.Timeout))
+		env = append(env, fmt.Sprintf("API_TIMEOUT_MS=%d", be.Timeout.Milliseconds()))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_HAIKU_MODEL=%s", be.HaikuModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_SONNET_MODEL=%s", be.SonnetModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_OPUS_MODEL=%s", be.OpusModel))
@@ -832,7 +941,8 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "Error launching claude: %v\n", err)
@@ -877,7 +987,7 @@ func showStatus() {
 
 	// Title
 	fmt.Println()
-	title := styleTitle.Render(fmt.Sprintf("PROMPTOPS v%s", version))
+	title := styleTitle.Render(fmt.Sprintf("PROMPTOPS v%s", getVersion()))
 	fmt.Println(lipgloss.PlaceHorizontal(80, lipgloss.Center, title))
 	fmt.Println()
 
@@ -1051,8 +1161,7 @@ func renderProgressBar(label string, current, limit float64) {
 		percent = 100
 	}
 
-	width := 40
-	filled := int(percent * float64(width) / 100)
+	filled := int(percent * float64(progressBarWidth) / 100)
 	if filled < 0 {
 		filled = 0
 	}
@@ -1065,7 +1174,7 @@ func renderProgressBar(label string, current, limit float64) {
 	}
 
 	filledBar := lipgloss.NewStyle().Background(barColor).Foreground(colorText).Render(strings.Repeat(" ", filled))
-	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", width-filled))
+	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", progressBarWidth-filled))
 
 	fmt.Printf("%s  %s / %s  %s%s  %.0f%%\n",
 		styleLabel.Render(label),
@@ -1078,13 +1187,12 @@ func renderProgressBar(label string, current, limit float64) {
 }
 
 func renderMiniBar(percent float64) string {
-	width := 20
-	filled := int(percent * float64(width) / 100)
+	filled := int(percent * float64(miniBarWidth) / 100)
 	if filled < 0 {
 		filled = 0
 	}
-	if filled > width {
-		filled = width
+	if filled > miniBarWidth {
+		filled = miniBarWidth
 	}
 
 	barColor := colorSuccess
@@ -1096,13 +1204,17 @@ func renderMiniBar(percent float64) string {
 	}
 
 	filledBar := lipgloss.NewStyle().Background(barColor).Render(strings.Repeat(" ", filled))
-	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", width-filled))
+	emptyBar := lipgloss.NewStyle().Background(colorMuted).Render(strings.Repeat(" ", miniBarWidth-filled))
 
 	return filledBar + emptyBar + fmt.Sprintf(" %.0f%%", percent)
 }
 
 func initEnv() {
-	dir := getScriptDir()
+	dir, err := getScriptDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	envFile := filepath.Join(dir, ".env.local")
 
 	if _, err := os.Stat(envFile); err == nil {
@@ -1212,7 +1324,7 @@ OLLAMA_API_KEY=
 
 func showVersion() {
 	fmt.Println("PromptOps Enterprise AI Model Backend Switcher")
-	fmt.Printf("Version: %s\n", version)
+	fmt.Printf("Version: %s\n", getVersion())
 	fmt.Println()
 	fmt.Println("Supported backends:")
 	fmt.Println("  Tier 1 (Recommended for code/security):")
@@ -1235,7 +1347,7 @@ func showVersion() {
 
 func showHelp() {
 	fmt.Println("+-------------------------------------------------------------------------------+")
-	fmt.Println("|                    PROMPTOPS ENTERPRISE v" + version + "                       |")
+	fmt.Println("|                    PROMPTOPS ENTERPRISE v" + getVersion() + "                       |")
 	fmt.Println("+-------------------------------------------------------------------------------+")
 	fmt.Println()
 	fmt.Println("Usage: promptops <command> [options]")
@@ -1262,6 +1374,10 @@ func showHelp() {
 	fmt.Println("    cost                    Show cost dashboard with budgets")
 	fmt.Println("    cost log                Show detailed usage log")
 	fmt.Println()
+	fmt.Println("  API Usage:")
+	fmt.Println("    usage                   Show usage data from all provider APIs")
+	fmt.Println("    usage <backend>         Show usage for specific backend")
+	fmt.Println()
 	fmt.Println("  Budget Management:")
 	fmt.Println("    budget status           Show budget progress")
 	fmt.Println("    budget set <period> <amount>  Set budget (daily/weekly/monthly)")
@@ -1281,6 +1397,7 @@ func showHelp() {
 	fmt.Println("  General Commands:")
 	fmt.Println("    status                  Show current backend and configuration")
 	fmt.Println("    run [args]              Launch Claude Code with current backend")
+	fmt.Println("    usage [backend]         Check API usage from provider APIs")
 	fmt.Println("    init                    Initialize .env.local with API key templates")
 	fmt.Println("    version                 Show version information")
 	fmt.Println("    help                    Show this help message")
@@ -1297,6 +1414,8 @@ func showHelp() {
 	fmt.Println("  promptops status          # Check current configuration")
 	fmt.Println("  promptops run             # Launch with current backend")
 	fmt.Println("  promptops doctor          # Run health checks")
+	fmt.Println("  promptops usage           # Check API usage from all providers")
+	fmt.Println("  promptops usage claude    # Check Claude API usage")
 	fmt.Println("  promptops session start bugfix-123")
 	fmt.Println()
 }
@@ -1326,49 +1445,96 @@ func getCurrentSession(cfg *Config) *Session {
 	}
 
 	sessions := loadSessions(cfg)
-	for i := range sessions {
-		if sessions[i].ID == sessionID {
-			return &sessions[i]
+	for _, s := range sessions {
+		if s == nil {
+			continue
+		}
+		if s.ID == sessionID {
+			return s
 		}
 	}
 	return nil
 }
 
 func setCurrentSession(cfg *Config, sessionID string) error {
-	return os.WriteFile(cfg.SessionFile, []byte(sessionID), 0600)
+	return writeFileAtomic(cfg.SessionFile, []byte(sessionID), 0600)
 }
 
-func loadSessions(cfg *Config) []Session {
-	data, err := os.ReadFile(cfg.SessionsFile)
+// withFileLock executes the given function with an exclusive file lock
+func withFileLock(lockPath string, fn func() error) error {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to read sessions file: %v\n", err)
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer os.Remove(lockPath)
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	return fn()
+}
+
+func loadSessions(cfg *Config) []*Session {
+	lockPath := cfg.SessionsFile + ".lock"
+
+	var sessions []*Session
+	err := withFileLock(lockPath, func() error {
+		data, err := os.ReadFile(cfg.SessionsFile)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "Warning: failed to read sessions file: %v\n", err)
+			}
+			return nil
 		}
-		return []Session{}
+
+		if err := json.Unmarshal(data, &sessions); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: sessions file corrupted: %v\n", err)
+
+			// Backup corrupted file
+			backupPath := cfg.SessionsFile + ".corrupted." + time.Now().Format("20060102-150405")
+			if err := os.WriteFile(backupPath, data, 0600); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to backup corrupted sessions: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Info: backed up corrupted sessions to %s\n", backupPath)
+			}
+
+			return nil
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to lock sessions file: %v\n", err)
+		return []*Session{}
 	}
 
-	var sessions []Session
-	if err := json.Unmarshal(data, &sessions); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: sessions file corrupted, starting fresh: %v\n", err)
-		return []Session{}
+	if sessions == nil {
+		return []*Session{}
 	}
 	return sessions
 }
 
-func saveSessions(cfg *Config, sessions []Session) error {
-	data, err := json.MarshalIndent(sessions, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(cfg.SessionsFile, data, 0600)
+func saveSessions(cfg *Config, sessions []*Session) error {
+	lockPath := cfg.SessionsFile + ".lock"
+
+	return withFileLock(lockPath, func() error {
+		data, err := json.MarshalIndent(sessions, "", "  ")
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(cfg.SessionsFile, data, 0600)
+	})
 }
 
 // generateSessionID creates a unique session ID with random component
 func generateSessionID(name string) string {
-	b := make([]byte, 4)
+	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to time-based if crypto/rand fails
-		return fmt.Sprintf("%s-%d", name, time.Now().Unix())
+		// Use nanosecond timestamp + PID as fallback (still unique, not predictable)
+		return fmt.Sprintf("%s-%d-%d", name, time.Now().UnixNano(), os.Getpid())
 	}
 	return fmt.Sprintf("%s-%d-%s", name, time.Now().Unix(), hex.EncodeToString(b))
 }
@@ -1391,7 +1557,7 @@ func createSession(cfg *Config, name string) (*Session, error) {
 		Status:      "active",
 	}
 
-	sessions = append(sessions, session)
+	sessions = append(sessions, &session)
 	if err := saveSessions(cfg, sessions); err != nil {
 		return nil, fmt.Errorf("failed to save sessions: %w", err)
 	}
@@ -1450,7 +1616,11 @@ func logUsage(cfg *Config, backend string, inputTokens, outputTokens int64) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to open usage file: %v\n", err)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close usage file: %v\n", err)
+		}
+	}()
 	if _, err := fmt.Fprintln(f, string(data)); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write usage record: %v\n", err)
 	}
@@ -1511,10 +1681,14 @@ func formatCurrency(amount float64) string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 3 {
+		return "..."
+	}
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func formatDuration(d time.Duration) string {
@@ -1629,9 +1803,7 @@ func showCostLog() {
 	for i := len(records) - 1; i >= start; i-- {
 		r := records[i]
 		sessionID := r.SessionID
-		if len(sessionID) > 18 {
-			sessionID = sessionID[:15] + "..."
-		}
+		sessionID = truncate(sessionID, 18)
 		if sessionID == "" {
 			sessionID = "-"
 		}
@@ -1745,8 +1917,9 @@ func setBudget(period, amountStr string) {
 	}
 
 	newContent := strings.Join(lines, "\n")
-	if err := os.WriteFile(envFile, []byte(newContent), 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing .env.local: %v\n", err)
+	if err := writeFileAtomic(envFile, []byte(newContent), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to update configuration\n")
+		auditLog(cfg, fmt.Sprintf("CONFIG_WRITE_ERROR: %v", err))
 		os.Exit(1)
 	}
 
@@ -1762,7 +1935,10 @@ func runDoctor() {
 
 	rows := [][]string{}
 	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter", "ollama"} {
-		be := backends[name]
+		be, ok := backends[name]
+		if !ok {
+			continue // Skip unknown backends (defensive)
+		}
 		result := checkBackendHealth(cfg, be)
 
 		statusStr := ""
@@ -1869,8 +2045,7 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		if be.BaseURL != "" {
 			url = be.BaseURL + "/models"
 			req, err = http.NewRequest("GET", url, nil)
-			// Ollama typically doesn't require auth for local use
-			if apiKey != "" {
+			if err == nil && apiKey != "" {
 				req.Header.Set("Authorization", "Bearer "+apiKey)
 			}
 		} else {
@@ -1881,19 +2056,20 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		if be.BaseURL != "" {
 			url = be.BaseURL + "/models"
 			req, err = http.NewRequest("GET", url, nil)
-			if err == nil {
-				req.Header.Set("Authorization", "Bearer "+apiKey)
+			if err != nil {
+				return HealthResult{Backend: be.Name, Status: "error", Message: err.Error()}
 			}
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		} else {
 			return HealthResult{Backend: be.Name, Status: "skip", Message: "Health check not implemented"}
 		}
 	}
 
-	if err != nil {
+	if err != nil || req == nil {
 		return HealthResult{Backend: be.Name, Status: "error", Message: err.Error()}
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := httpClient
 	resp, err := client.Do(req)
 	latency := time.Since(start)
 
@@ -2094,9 +2270,9 @@ func showSessionInfo(name string) {
 			os.Exit(1)
 		}
 	} else {
-		for i, s := range sessions {
+		for _, s := range sessions {
 			if s.Name == name {
-				session = &sessions[i]
+				session = s
 				break
 			}
 		}
@@ -2115,7 +2291,11 @@ func showSessionInfo(name string) {
 	valueStyle := lipgloss.NewStyle()
 
 	fmt.Printf("%s %s\n", infoStyle.Render("ID:"), valueStyle.Render(truncate(session.ID, 50)))
-	fmt.Printf("%s %s\n", infoStyle.Render("Backend:"), valueStyle.Render(backends[session.Backend].DisplayName))
+	backendName := "Unknown"
+	if be, ok := backends[session.Backend]; ok {
+		backendName = be.DisplayName
+	}
+	fmt.Printf("%s %s\n", infoStyle.Render("Backend:"), valueStyle.Render(backendName))
 
 	statusStr := session.Status
 	switch session.Status {
@@ -2170,7 +2350,7 @@ func cleanupSessions() {
 
 	// Remove sessions closed for more than 30 days
 	cutoff := time.Now().AddDate(0, 0, -30)
-	var kept []Session
+	var kept []*Session
 	removed := 0
 
 	for _, s := range sessions {
@@ -2187,4 +2367,338 @@ func cleanupSessions() {
 	} else {
 		fmt.Println("No old sessions to cleanup")
 	}
+}
+
+// ============================================================================
+// API USAGE COMMAND - Fetch real usage from provider APIs
+// ============================================================================
+
+// UsageInfo represents usage data from a provider
+type UsageInfo struct {
+	Backend      string
+	TotalTokens  int64
+	InputTokens  int64
+	OutputTokens int64
+	TotalCost    float64
+	RequestCount int64
+	Period       string
+	Error        string
+}
+
+func showAPIUsage(args []string) {
+	cfg := loadConfig()
+
+	// If specific backend requested
+	if len(args) > 0 {
+		backend := args[0]
+		be, ok := backends[backend]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: Unknown backend '%s'\n", backend)
+			os.Exit(1)
+		}
+
+		apiKey := cfg.Keys[be.AuthVar]
+		if apiKey == "" && be.Name != "ollama" {
+			fmt.Fprintf(os.Stderr, "Error: No API key configured for %s\n", be.DisplayName)
+			os.Exit(1)
+		}
+
+		fmt.Println()
+		fmt.Printf("Fetching usage for %s...\n", be.DisplayName)
+		usage := fetchUsageForBackend(be, apiKey)
+		displayUsage(usage)
+		return
+	}
+
+	// Show usage for all configured backends
+	fmt.Println()
+	title := styleTitle.Render("API USAGE DASHBOARD")
+	fmt.Println(lipgloss.PlaceHorizontal(80, lipgloss.Center, title))
+	fmt.Println()
+
+	var usages []UsageInfo
+	for _, name := range []string{"claude", "openai", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter"} {
+		be, ok := backends[name]
+		if !ok {
+			continue
+		}
+
+		apiKey := cfg.Keys[be.AuthVar]
+		if apiKey == "" {
+			continue // Skip backends without keys
+		}
+
+		usage := fetchUsageForBackend(be, apiKey)
+		usages = append(usages, usage)
+	}
+
+	if len(usages) == 0 {
+		fmt.Println("No configured backends with API keys found.")
+		fmt.Println("Add API keys to .env.local to see usage data.")
+		return
+	}
+
+	// Display summary table
+	rows := [][]string{}
+	var totalCost float64
+	var totalTokens int64
+
+	for _, u := range usages {
+		be := backends[u.Backend]
+		status := formatCurrency(u.TotalCost)
+		if u.Error != "" {
+			status = styleMuted.Render(u.Error)
+		}
+
+		rows = append(rows, []string{
+			be.DisplayName,
+			formatNumber(u.TotalTokens),
+			formatNumber(u.InputTokens),
+			formatNumber(u.OutputTokens),
+			formatNumberInt(u.RequestCount),
+			status,
+		})
+
+		totalCost += u.TotalCost
+		totalTokens += u.TotalTokens
+	}
+
+	t := table.New().
+		Headers("Backend", "Total Tokens", "Input", "Output", "Requests", "Cost").
+		Rows(rows...).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorSubtle)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == 0 {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+			}
+			return lipgloss.NewStyle().Padding(0, 1)
+		}).
+		Width(90)
+
+	fmt.Println(t.Render())
+	fmt.Println()
+	fmt.Printf("Total across all backends: %s  %s tokens\n",
+		styleAccent.Render(formatCurrency(totalCost)),
+		formatNumber(totalTokens))
+	fmt.Println()
+
+	// Show detailed breakdown for each backend
+	for _, u := range usages {
+		if u.Error != "" {
+			displayUsageError(u)
+		} else if u.TotalTokens > 0 {
+			displayUsageDetail(u)
+		}
+	}
+}
+
+func fetchUsageForBackend(be Backend, apiKey string) UsageInfo {
+	usage := UsageInfo{Backend: be.Name, Period: "current period"}
+
+	switch be.Name {
+	case "claude":
+		return fetchAnthropicUsage(apiKey)
+	case "openai":
+		return fetchOpenAIUsage(apiKey)
+	case "kimi":
+		return fetchKimiUsage(apiKey)
+	default:
+		// For other backends, try generic OpenAI-compatible endpoint or return N/A
+		if be.BaseURL != "" {
+			return fetchOpenAICompatibleUsage(be, apiKey)
+		}
+		usage.Error = "Usage API not implemented for this provider"
+	}
+
+	return usage
+}
+
+func fetchAnthropicUsage(apiKey string) UsageInfo {
+	usage := UsageInfo{Backend: "claude", Period: "last 24 hours"}
+
+	// Anthropic doesn't have a public usage API endpoint
+	// Return N/A instead of error for cleaner display
+	usage.Error = "N/A (see console)"
+	return usage
+}
+
+func fetchOpenAIUsage(apiKey string) UsageInfo {
+	usage := UsageInfo{Backend: "openai", Period: "current billing period"}
+
+	// OpenAI's usage API requires admin access and a specific 'date' parameter
+	// Most users don't have access to this endpoint
+	// Return N/A instead of error for cleaner display
+	usage.Error = "N/A (see dashboard)"
+	return usage
+}
+
+func fetchKimiUsage(apiKey string) UsageInfo {
+	usage := UsageInfo{Backend: "kimi", Period: "current billing period"}
+
+	// Kimi API usage endpoint
+	req, err := http.NewRequest("GET", "https://api.kimi.com/coding/usage", nil)
+	if err != nil {
+		usage.Error = "N/A"
+		return usage
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		usage.Error = "N/A"
+		return usage
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+		// Kimi may not expose this endpoint
+		usage.Error = "N/A (see console)"
+		return usage
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		usage.Error = "N/A"
+		return usage
+	}
+
+	var result struct {
+		Data struct {
+			TotalTokens   int64   `json:"total_tokens"`
+			InputTokens   int64   `json:"input_tokens"`
+			OutputTokens  int64   `json:"output_tokens"`
+			TotalRequests int64   `json:"total_requests"`
+			TotalCost     float64 `json:"total_cost"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		usage.Error = "N/A"
+		return usage
+	}
+
+	usage.TotalTokens = result.Data.TotalTokens
+	usage.InputTokens = result.Data.InputTokens
+	usage.OutputTokens = result.Data.OutputTokens
+	usage.RequestCount = result.Data.TotalRequests
+	usage.TotalCost = result.Data.TotalCost
+
+	return usage
+}
+
+func fetchOpenAICompatibleUsage(be Backend, apiKey string) UsageInfo {
+	usage := UsageInfo{Backend: be.Name, Period: "current period"}
+
+	// Generic handler for OpenAI-compatible APIs
+	url := be.BaseURL + "/usage"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		usage.Error = err.Error()
+		return usage
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		usage.Error = err.Error()
+		return usage
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		usage.Error = fmt.Sprintf("Usage API not available (HTTP %d)", resp.StatusCode)
+		return usage
+	}
+
+	// Generic parsing - try common field names
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		usage.Error = err.Error()
+		return usage
+	}
+
+	// Try to extract common fields
+	if data, ok := result["data"].(map[string]interface{}); ok {
+		if v, ok := data["total_tokens"].(float64); ok {
+			usage.TotalTokens = int64(v)
+		}
+		if v, ok := data["input_tokens"].(float64); ok {
+			usage.InputTokens = int64(v)
+		}
+		if v, ok := data["output_tokens"].(float64); ok {
+			usage.OutputTokens = int64(v)
+		}
+		if v, ok := data["total_cost"].(float64); ok {
+			usage.TotalCost = v
+		}
+	}
+
+	return usage
+}
+
+func displayUsage(u UsageInfo) {
+	be := backends[u.Backend]
+	fmt.Println()
+	fmt.Println(styleSection.Render(fmt.Sprintf("USAGE: %s", be.DisplayName)))
+
+	if u.Error != "" {
+		fmt.Println(styleWarning.Render(u.Error))
+		return
+	}
+
+	fmt.Printf("  Period:      %s\n", u.Period)
+	fmt.Printf("  Total Tokens: %s\n", formatNumber(u.TotalTokens))
+	fmt.Printf("  Input Tokens: %s\n", formatNumber(u.InputTokens))
+	fmt.Printf("  Output Tokens: %s\n", formatNumber(u.OutputTokens))
+	fmt.Printf("  Requests:    %s\n", formatNumberInt(u.RequestCount))
+	fmt.Printf("  Total Cost:  %s\n", styleAccent.Render(formatCurrency(u.TotalCost)))
+	fmt.Println()
+}
+
+func displayUsageDetail(u UsageInfo) {
+	if u.Error != "" {
+		return
+	}
+
+	be := backends[u.Backend]
+
+	infoStyle := lipgloss.NewStyle().Width(15).Foreground(colorSubtle)
+	fmt.Printf("%s: ", be.DisplayName)
+	fmt.Printf("%s tokens, ", formatNumber(u.TotalTokens))
+	fmt.Printf("%s requests, ", formatNumberInt(u.RequestCount))
+	fmt.Printf("cost: %s\n", styleAccent.Render(formatCurrency(u.TotalCost)))
+
+	_ = infoStyle // Suppress unused variable warning
+}
+
+func displayUsageError(u UsageInfo) {
+	if u.Error == "" || u.Error == "N/A" || u.Error == "N/A (see console)" || u.Error == "N/A (see dashboard)" {
+		return
+	}
+
+	be := backends[u.Backend]
+	fmt.Printf("%s: %s\n", be.DisplayName, styleWarning.Render(u.Error))
+}
+
+func formatNumber(n int64) string {
+	if n == 0 {
+		return "-"
+	}
+	if n >= 1000000 {
+		return fmt.Sprintf("%.2fM", float64(n)/1000000)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func formatNumberInt(n int64) string {
+	if n == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", n)
 }

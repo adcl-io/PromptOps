@@ -2,6 +2,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,15 +180,64 @@ func TestOllamaBackend(t *testing.T) {
 
 func TestGetYoloModeOllama(t *testing.T) {
 	cfg := &Config{
-		YoloModeOllama: true,
+		YoloModes: map[string]bool{
+			"ollama": true,
+		},
 	}
 
 	if !cfg.getYoloMode("ollama") {
-		t.Error("Expected getYoloMode('ollama') to return true when YoloModeOllama is true")
+		t.Error("Expected getYoloMode('ollama') to return true when YoloModes['ollama'] is true")
 	}
 
-	cfg.YoloModeOllama = false
+	cfg.YoloModes["ollama"] = false
 	if cfg.getYoloMode("ollama") {
-		t.Error("Expected getYoloMode('ollama') to return false when YoloModeOllama is false")
+		t.Error("Expected getYoloMode('ollama') to return false when YoloModes['ollama'] is false")
+	}
+}
+
+func TestGetVersion(t *testing.T) {
+	// Test that getVersion returns version when buildVersion is empty
+	originalVersion := version
+	originalBuildVersion := buildVersion
+	defer func() {
+		version = originalVersion
+		buildVersion = originalBuildVersion
+	}()
+
+	version = "dev"
+	buildVersion = ""
+	if got := getVersion(); got != "dev" {
+		t.Errorf("Expected getVersion() = 'dev' when buildVersion is empty, got %q", got)
+	}
+
+	// Test that getVersion prefers buildVersion when set
+	buildVersion = "2.5.0"
+	if got := getVersion(); got != "2.5.0" {
+		t.Errorf("Expected getVersion() = '2.5.0' when buildVersion is set, got %q", got)
+	}
+}
+
+func TestTruncateUnicode(t *testing.T) {
+	// Test Unicode string truncation
+	unicodeStr := "Hello世界这是一个很长的字符串"
+	truncated := truncate(unicodeStr, 10)
+	if len([]rune(truncated)) != 10 {
+		t.Errorf("Expected truncated string to have 10 runes, got %d", len([]rune(truncated)))
+	}
+	if !strings.HasSuffix(truncated, "...") {
+		t.Error("Expected truncated string to end with '...'")
+	}
+
+	// Test that we don't truncate short strings
+	shortUnicode := "Hello世界"
+	if truncate(shortUnicode, 10) != shortUnicode {
+		t.Error("Expected short Unicode string to not be truncated")
+	}
+
+	// Test mixed ASCII and Unicode
+	mixed := "Test测试Test测试Test"
+	truncated = truncate(mixed, 12)
+	if len([]rune(truncated)) != 12 {
+		t.Errorf("Expected truncated mixed string to have 12 runes, got %d", len([]rune(truncated)))
 	}
 }

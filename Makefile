@@ -6,7 +6,7 @@ VERSION=2.4.0
 BUILD_DIR=build
 
 # Go build flags
-LDFLAGS=-ldflags "-s -w -X main.version=${VERSION}"
+LDFLAGS=-ldflags "-s -w -X main.version=${VERSION} -X main.buildVersion=${VERSION}"
 
 .PHONY: all clean build linux macos macos-arm install
 
