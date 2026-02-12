@@ -52,37 +52,40 @@ const (
 
 // allowedEnvVars defines which environment variables are safe to pass to child processes
 var allowedEnvVars = map[string]bool{
-	"PATH":      true,
-	"HOME":      true,
-	"USER":      true,
-	"SHELL":     true,
-	"TERM":      true,
-	"TERMINFO":  true,
-	"LANG":      true,
-	"LANGUAGE":  true,
-	"LC_ALL":    true,
-	"LC_CTYPE":  true,
-	"EDITOR":    true,
-	"PAGER":     true,
-	"LESS":      true,
-	"MORE":      true,
-	"TMPDIR":    true,
-	"TEMP":      true,
-	"TMP":       true,
-	"SSH_AUTH_SOCK": true,
+	"PATH":               true,
+	"HOME":               true,
+	"USER":               true,
+	"SHELL":              true,
+	"TERM":               true,
+	"TERMINFO":           true,
+	"LANG":               true,
+	"LANGUAGE":           true,
+	"LC_ALL":             true,
+	"LC_CTYPE":           true,
+	"EDITOR":             true,
+	"PAGER":              true,
+	"LESS":               true,
+	"MORE":               true,
+	"TMPDIR":             true,
+	"TEMP":               true,
+	"TMP":                true,
+	"SSH_AUTH_SOCK":      true,
 	"SSH_AGENT_LAUNCHER": true,
 	// Anthropic/Claude specific variables
-	"ANTHROPIC_AUTH_TOKEN":               true,
-	"ANTHROPIC_BASE_URL":                 true,
-	"API_TIMEOUT_MS":                     true,
-	"ANTHROPIC_DEFAULT_HAIKU_MODEL":      true,
-	"ANTHROPIC_DEFAULT_SONNET_MODEL":     true,
-	"ANTHROPIC_DEFAULT_OPUS_MODEL":       true,
+	"ANTHROPIC_AUTH_TOKEN":           true,
+	"ANTHROPIC_BASE_URL":             true,
+	"API_TIMEOUT_MS":                 true,
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL":  true,
+	"ANTHROPIC_DEFAULT_SONNET_MODEL": true,
+	"ANTHROPIC_DEFAULT_OPUS_MODEL":   true,
 	// Ollama specific variables (for local LLM configuration)
-	"OLLAMA_API_KEY":                     true,
-	"OLLAMA_HAIKU_MODEL":                 true,
-	"OLLAMA_SONNET_MODEL":                true,
-	"OLLAMA_OPUS_MODEL":                  true,
+	"OLLAMA_API_KEY":      true,
+	"OLLAMA_HAIKU_MODEL":  true,
+	"OLLAMA_SONNET_MODEL": true,
+	"OLLAMA_OPUS_MODEL":   true,
+	"ZAI_HAIKU_MODEL":     true,
+	"ZAI_SONNET_MODEL":    true,
+	"ZAI_OPUS_MODEL":      true,
 }
 
 // sanitizeArgs removes potentially dangerous characters from command arguments
@@ -397,6 +400,8 @@ type Config struct {
 	MonthlyBudget float64
 	// Ollama model configuration (allows user to specify local models)
 	OllamaModels map[string]string // haiku/sonnet/opus -> model name
+	// Z.AI model configuration (allows user to specify GLM model versions)
+	ZAIModels map[string]string // haiku/sonnet/opus -> model name
 }
 
 // UsageRecord represents a single API usage entry
@@ -526,6 +531,7 @@ func loadConfig() *Config {
 		Keys:           make(map[string]string),
 		YoloModes:      make(map[string]bool),
 		OllamaModels:   make(map[string]string),
+		ZAIModels:      make(map[string]string),
 		DefaultBackend: "claude",
 		VerifyOnSwitch: true,
 		AuditEnabled:   true,
@@ -609,6 +615,13 @@ func loadConfig() *Config {
 				cfg.OllamaModels["sonnet"] = value
 			case "OLLAMA_OPUS_MODEL":
 				cfg.OllamaModels["opus"] = value
+			// Z.AI model configuration - allow custom GLM model versions
+			case "ZAI_HAIKU_MODEL":
+				cfg.ZAIModels["haiku"] = value
+			case "ZAI_SONNET_MODEL":
+				cfg.ZAIModels["sonnet"] = value
+			case "ZAI_OPUS_MODEL":
+				cfg.ZAIModels["opus"] = value
 			}
 		}
 	}
@@ -625,7 +638,7 @@ func (c *Config) getYoloMode(backend string) bool {
 			return v
 		}
 	}
-	return false
+	return true
 }
 
 func getCurrentBackend(cfg *Config) string {
@@ -967,7 +980,7 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 		sonnetModel := be.SonnetModel
 		opusModel := be.OpusModel
 
-		if be.Name == "ollama" && cfg.OllamaModels != nil {
+		if be.Name == "ollama" {
 			if m, ok := cfg.OllamaModels["haiku"]; ok && m != "" {
 				haikuModel = strings.TrimSpace(m)
 			}
@@ -975,6 +988,18 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 				sonnetModel = strings.TrimSpace(m)
 			}
 			if m, ok := cfg.OllamaModels["opus"]; ok && m != "" {
+				opusModel = strings.TrimSpace(m)
+			}
+		}
+
+		if be.Name == "zai" {
+			if m, ok := cfg.ZAIModels["haiku"]; ok && m != "" {
+				haikuModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.ZAIModels["sonnet"]; ok && m != "" {
+				sonnetModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.ZAIModels["opus"]; ok && m != "" {
 				opusModel = strings.TrimSpace(m)
 			}
 		}
@@ -1027,17 +1052,17 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 // buildModelMap creates a mapping from Anthropic model names to Ollama model names
 func buildModelMap(cfg *Config) map[string]string {
 	modelMap := map[string]string{
-		"llama3.2":           "llama3.2:latest",
-		"llama3.2:latest":    "llama3.2:latest",
-		"llama3.2:3b":        "llama3.2:3b",
-		"codellama":          "codellama:latest",
-		"codellama:latest":   "codellama:latest",
-		"phi3":               "phi3:latest",
-		"phi3:latest":        "phi3:latest",
-		"mistral":            "mistral:latest",
-		"mistral:latest":     "mistral:latest",
-		"llama3.3":           "llama3.3:latest",
-		"llama3.3:latest":    "llama3.3:latest",
+		"llama3.2":         "llama3.2:latest",
+		"llama3.2:latest":  "llama3.2:latest",
+		"llama3.2:3b":      "llama3.2:3b",
+		"codellama":        "codellama:latest",
+		"codellama:latest": "codellama:latest",
+		"phi3":             "phi3:latest",
+		"phi3:latest":      "phi3:latest",
+		"mistral":          "mistral:latest",
+		"mistral:latest":   "mistral:latest",
+		"llama3.3":         "llama3.3:latest",
+		"llama3.3:latest":  "llama3.3:latest",
 	}
 
 	// Add custom models from config
@@ -1079,6 +1104,36 @@ func runClaude(args []string) {
 	launchClaudeWithBackend(cfg, be, args)
 }
 
+// formatCustomModels returns a formatted string of custom models for the given backend
+func formatCustomModels(backend string, cfg *Config) string {
+	var models map[string]string
+	switch backend {
+	case "ollama":
+		models = cfg.OllamaModels
+	case "zai":
+		models = cfg.ZAIModels
+	default:
+		return ""
+	}
+
+	if len(models) == 0 {
+		return ""
+	}
+
+	var customModels []string
+	if m, ok := models["haiku"]; ok && m != "" {
+		customModels = append(customModels, fmt.Sprintf("haiku=%s", m))
+	}
+	if m, ok := models["sonnet"]; ok && m != "" {
+		customModels = append(customModels, fmt.Sprintf("sonnet=%s", m))
+	}
+	if m, ok := models["opus"]; ok && m != "" {
+		customModels = append(customModels, fmt.Sprintf("opus=%s", m))
+	}
+
+	return strings.Join(customModels, ", ")
+}
+
 func showStatus() {
 	cfg := loadConfig()
 	current := getCurrentBackend(cfg)
@@ -1114,6 +1169,10 @@ func showStatus() {
 			}
 			fmt.Println(status)
 			fmt.Println(styleMuted.Render(be.Models))
+			// Show custom models if configured
+			if custom := formatCustomModels(be.Name, cfg); custom != "" {
+				fmt.Println(styleWarning.Render("Custom: " + custom))
+			}
 		}
 	}
 	if current == "" {
@@ -1337,22 +1396,23 @@ func initEnv() {
 
 # -------------------------------------------------------------------------------
 # YOLO MODE - Auto-confirm settings for each backend
-# Set to "true" to skip confirmations and auto-launch for that backend
+# DEFAULT: true (skip confirmations and auto-launch)
+# Set to "false" if you want Claude Code to prompt for permissions
 # -------------------------------------------------------------------------------
-NEXUS_YOLO_MODE_CLAUDE=false
-NEXUS_YOLO_MODE_ZAI=false
-NEXUS_YOLO_MODE_KIMI=false
-NEXUS_YOLO_MODE_DEEPSEEK=false
-NEXUS_YOLO_MODE_GEMINI=false
-NEXUS_YOLO_MODE_MISTRAL=false
-NEXUS_YOLO_MODE_GROQ=false
-NEXUS_YOLO_MODE_TOGETHER=false
-NEXUS_YOLO_MODE_OPENROUTER=false
-NEXUS_YOLO_MODE_OPENAI=false
-NEXUS_YOLO_MODE_OLLAMA=false
+# NEXUS_YOLO_MODE_CLAUDE=false
+# NEXUS_YOLO_MODE_ZAI=false
+# NEXUS_YOLO_MODE_KIMI=false
+# NEXUS_YOLO_MODE_DEEPSEEK=false
+# NEXUS_YOLO_MODE_GEMINI=false
+# NEXUS_YOLO_MODE_MISTRAL=false
+# NEXUS_YOLO_MODE_GROQ=false
+# NEXUS_YOLO_MODE_TOGETHER=false
+# NEXUS_YOLO_MODE_OPENROUTER=false
+# NEXUS_YOLO_MODE_OPENAI=false
+# NEXUS_YOLO_MODE_OLLAMA=false
 
-# Global YOLO mode - overrides all backends when true
-NEXUS_YOLO_MODE=false
+# Global YOLO mode - overrides all backends when set
+# NEXUS_YOLO_MODE=false
 
 # -------------------------------------------------------------------------------
 # Enterprise Settings
@@ -1521,8 +1581,8 @@ func showHelp() {
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  NEXUS_ENV_FILE            Path to env file (default: ./.env.local)")
-	fmt.Println("  NEXUS_YOLO_MODE           Global YOLO mode (true|false)")
-	fmt.Println("  NEXUS_YOLO_MODE_<BACKEND> YOLO mode for specific backend")
+	fmt.Println("  NEXUS_YOLO_MODE           Global YOLO mode (default: true)")
+	fmt.Println("  NEXUS_YOLO_MODE_<BACKEND> YOLO mode for specific backend (default: true)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  promptops deepseek        # Switch to DeepSeek and launch Claude Code")
