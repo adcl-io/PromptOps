@@ -4,7 +4,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +51,15 @@ const healthCheckTimeout = 5 * time.Second
 const (
 	progressBarWidth = 40
 	miniBarWidth     = 20
+)
+
+// HTTP client and request timeouts
+const (
+	httpClientTimeout  = 10 * time.Second
+	maxResponseSize    = 10 * 1024 * 1024 // 10MB
+	maxArgLength       = 4096
+	maxModelNameLength = 128
+	sessionCleanupDays = 30
 )
 
 // allowedEnvVars defines which environment variables are safe to pass to child processes
@@ -86,6 +98,34 @@ var allowedEnvVars = map[string]bool{
 	"ZAI_HAIKU_MODEL":     true,
 	"ZAI_SONNET_MODEL":    true,
 	"ZAI_OPUS_MODEL":      true,
+	"KIMI_HAIKU_MODEL":    true,
+	"KIMI_SONNET_MODEL":   true,
+	"KIMI_OPUS_MODEL":     true,
+	// Additional sensitive variables to filter out (never pass to child processes)
+	"AWS_SECRET_ACCESS_KEY": true,
+	"AWS_ACCESS_KEY_ID":     true,
+	"AWS_SESSION_TOKEN":     true,
+	"GITHUB_TOKEN":          true,
+	"GITHUB_API_TOKEN":      true,
+	"GITLAB_TOKEN":          true,
+	"KUBECONFIG":            true,
+	"DOCKER_CONFIG":         true,
+	"NPM_TOKEN":             true,
+	"PYPI_TOKEN":            true,
+	"GEM_API_KEY":           true,
+	"SLACK_TOKEN":           true,
+	"SLACK_WEBHOOK_URL":     true,
+	"TWILIO_AUTH_TOKEN":     true,
+	"SENDGRID_API_KEY":      true,
+	"STRIPE_SECRET_KEY":     true,
+	"STRIPE_API_KEY":        true,
+	"PRIVATE_KEY":           true,
+	"SSH_PRIVATE_KEY":       true,
+	"PGPASSWORD":            true,
+	"MYSQL_PWD":             true,
+	"REDIS_PASSWORD":        true,
+	"MONGODB_URI":           true,
+	"DATABASE_URL":          true,
 }
 
 // sanitizeArgs removes potentially dangerous characters from command arguments
@@ -97,8 +137,8 @@ func sanitizeArgs(args []string) []string {
 		arg = strings.ReplaceAll(arg, "\n", "")
 		arg = strings.ReplaceAll(arg, "\r", "")
 		// Limit argument length to prevent DoS
-		if len(arg) > 4096 {
-			arg = arg[:4096]
+		if len(arg) > maxArgLength {
+			arg = arg[:maxArgLength]
 		}
 		sanitized = append(sanitized, arg)
 	}
@@ -109,7 +149,16 @@ func sanitizeArgs(args []string) []string {
 func filterEnvironment(env []string) []string {
 	var filtered []string
 	for _, e := range env {
-		key := strings.SplitN(e, "=", 2)[0]
+		// Handle malformed env vars (no = sign)
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 0 {
+			continue
+		}
+		key := parts[0]
+		if key == "" {
+			continue
+		}
+		// Only include if explicitly allowed AND not in the sensitive blocklist
 		if allowedEnvVars[key] {
 			filtered = append(filtered, e)
 		}
@@ -117,13 +166,24 @@ func filterEnvironment(env []string) []string {
 	return filtered
 }
 
-// Shared HTTP client with connection pooling
+// Shared HTTP client with connection pooling and secure TLS
 var httpClient = &http.Client{
 	Timeout: healthCheckTimeout,
 	Transport: &http.Transport{
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     30 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			},
+		},
 	},
 }
 
@@ -233,13 +293,13 @@ var backends = map[string]Backend{
 		Name:        "zai",
 		DisplayName: "Z.AI",
 		Provider:    "Z.AI (Zhipu AI)",
-		Models:      "GLM-4.7 (Sonnet/Opus) / GLM-4.5-Air (Haiku)",
+		Models:      "GLM-5 (Sonnet/Opus) / GLM-4.5-Air (Haiku)",
 		AuthVar:     "ZAI_API_KEY",
 		BaseURL:     "https://api.z.ai/api/anthropic",
 		Timeout:     defaultTimeout,
 		HaikuModel:  "glm-4.5-air",
-		SonnetModel: "glm-4.7",
-		OpusModel:   "glm-4.7",
+		SonnetModel: "glm-5",
+		OpusModel:   "glm-5",
 		InputPrice:  0.50,
 		OutputPrice: 2.00,
 		CodingTier:  "A",
@@ -402,6 +462,8 @@ type Config struct {
 	OllamaModels map[string]string // haiku/sonnet/opus -> model name
 	// Z.AI model configuration (allows user to specify GLM model versions)
 	ZAIModels map[string]string // haiku/sonnet/opus -> model name
+	// Kimi model configuration (allows user to specify Kimi model versions)
+	KimiModels map[string]string // haiku/sonnet/opus -> model name
 }
 
 // UsageRecord represents a single API usage entry
@@ -510,13 +572,38 @@ func loadConfig() *Config {
 	}
 	envFile := os.Getenv("NEXUS_ENV_FILE")
 	if envFile != "" {
-		// Validate to prevent path traversal
+		// Validate to prevent path traversal using EvalSymlinks
 		cleanPath := filepath.Clean(envFile)
-		if strings.Contains(cleanPath, "..") {
-			fmt.Fprintf(os.Stderr, "Error: NEXUS_ENV_FILE contains path traversal: %s\n", envFile)
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: NEXUS_ENV_FILE invalid path: %s\n", envFile)
 			os.Exit(1)
 		}
-		envFile = cleanPath
+		// Resolve symlinks to prevent bypass
+		resolvedPath, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			// File may not exist yet, check parent directory
+			parentDir := filepath.Dir(absPath)
+			resolvedParent, err := filepath.EvalSymlinks(parentDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: NEXUS_ENV_FILE parent directory invalid: %s\n", envFile)
+				os.Exit(1)
+			}
+			// Reconstruct path with resolved parent
+			resolvedPath = filepath.Join(resolvedParent, filepath.Base(absPath))
+		}
+		// Ensure resolved path is within allowed directories (home or script dir)
+		homeDir, _ := os.UserHomeDir()
+		scriptDir, _ := getScriptDir()
+		inHome := homeDir != "" && strings.HasPrefix(resolvedPath, homeDir+string(filepath.Separator))
+		inScript := scriptDir != "" && strings.HasPrefix(resolvedPath, scriptDir+string(filepath.Separator))
+		isHomeFile := homeDir != "" && resolvedPath == homeDir
+		isScriptFile := scriptDir != "" && resolvedPath == scriptDir
+		if !inHome && !inScript && !isHomeFile && !isScriptFile {
+			fmt.Fprintf(os.Stderr, "Error: NEXUS_ENV_FILE must be within home or script directory: %s\n", envFile)
+			os.Exit(1)
+		}
+		envFile = resolvedPath
 	} else {
 		envFile = filepath.Join(dir, ".env.local")
 	}
@@ -532,6 +619,7 @@ func loadConfig() *Config {
 		YoloModes:      make(map[string]bool),
 		OllamaModels:   make(map[string]string),
 		ZAIModels:      make(map[string]string),
+		KimiModels:     make(map[string]string),
 		DefaultBackend: "claude",
 		VerifyOnSwitch: true,
 		AuditEnabled:   true,
@@ -622,6 +710,13 @@ func loadConfig() *Config {
 				cfg.ZAIModels["sonnet"] = value
 			case "ZAI_OPUS_MODEL":
 				cfg.ZAIModels["opus"] = value
+			// Kimi model configuration - allow custom model versions
+			case "KIMI_HAIKU_MODEL":
+				cfg.KimiModels["haiku"] = value
+			case "KIMI_SONNET_MODEL":
+				cfg.KimiModels["sonnet"] = value
+			case "KIMI_OPUS_MODEL":
+				cfg.KimiModels["opus"] = value
 			}
 		}
 	}
@@ -656,7 +751,10 @@ func setCurrentBackend(cfg *Config, backend string) error {
 // writeFileAtomic writes data to a file atomically using temp file + rename
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
+	// Create temp file with restricted permissions from the start (0600)
+	// This prevents race condition between CreateTemp and Chmod
+	tmpFile, err := os.OpenFile(filepath.Join(dir, ".tmp-"+strconv.FormatInt(time.Now().UnixNano(), 10)),
+		os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -678,8 +776,11 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("close temp file: %w", err)
 	}
 
-	if err = os.Chmod(tmpPath, perm); err != nil {
-		return fmt.Errorf("chmod temp file: %w", err)
+	// Apply requested permissions (for sensitive files this should be 0600)
+	if perm != 0600 {
+		if err = os.Chmod(tmpPath, perm); err != nil {
+			return fmt.Errorf("chmod temp file: %w", err)
+		}
 	}
 
 	if err = os.Rename(tmpPath, path); err != nil {
@@ -696,6 +797,49 @@ const (
 	maskKeyVisibleSuffix = 4
 	maskKeyReplacement   = "****"
 )
+
+// modelNameRegex validates model names against whitelist pattern
+// Allows: alphanumeric, underscore, hyphen, colon, forward slash, period
+// Max length: 128 characters
+var modelNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-:/.]+$`)
+
+// validateModelName validates a model name against security constraints
+func validateModelName(model string) error {
+	if model == "" {
+		return errors.New("model name cannot be empty")
+	}
+	if len(model) > maxModelNameLength {
+		return fmt.Errorf("model name exceeds maximum length of %d characters", maxModelNameLength)
+	}
+	if !modelNameRegex.MatchString(model) {
+		return fmt.Errorf("model name contains invalid characters: must match pattern %s", modelNameRegex.String())
+	}
+	return nil
+}
+
+// sanitizeError removes potentially sensitive information from error messages
+func sanitizeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	errStr := err.Error()
+
+	// Remove common API key patterns
+	sensitivePatterns := []string{
+		`sk-[a-zA-Z0-9]{20,}`,
+		`sk-(?:ant-|kimi-|proj-)[a-zA-Z0-9_-]{10,}`,
+		`[a-zA-Z0-9]{32,}`,
+		`Bearer\s+[a-zA-Z0-9_-]+`,
+		`api[_-]?key[=:]\s*[a-zA-Z0-9_-]+`,
+	}
+
+	for _, pattern := range sensitivePatterns {
+		re := regexp.MustCompile(pattern)
+		errStr = re.ReplaceAllString(errStr, "[REDACTED]")
+	}
+
+	return errors.New(errStr)
+}
 
 func maskKey(key string) string {
 	if len(key) <= maskKeyMinLength {
@@ -1004,6 +1148,32 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 			}
 		}
 
+		if be.Name == "kimi" {
+			if m, ok := cfg.KimiModels["haiku"]; ok && m != "" {
+				haikuModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.KimiModels["sonnet"]; ok && m != "" {
+				sonnetModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.KimiModels["opus"]; ok && m != "" {
+				opusModel = strings.TrimSpace(m)
+			}
+		}
+
+		// Validate model names before setting environment variables
+		if err := validateModelName(haikuModel); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid haiku model name: %v\n", err)
+			os.Exit(1)
+		}
+		if err := validateModelName(sonnetModel); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid sonnet model name: %v\n", err)
+			os.Exit(1)
+		}
+		if err := validateModelName(opusModel); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid opus model name: %v\n", err)
+			os.Exit(1)
+		}
+
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_HAIKU_MODEL=%s", haikuModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_SONNET_MODEL=%s", sonnetModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_OPUS_MODEL=%s", opusModel))
@@ -1068,16 +1238,25 @@ func buildModelMap(cfg *Config) map[string]string {
 	// Add custom models from config
 	if cfg.OllamaModels != nil {
 		if m, ok := cfg.OllamaModels["haiku"]; ok && m != "" {
-			modelMap[m] = strings.TrimSpace(m)
-			modelMap["haiku"] = strings.TrimSpace(m)
+			validated := strings.TrimSpace(m)
+			if err := validateModelName(validated); err == nil {
+				modelMap[m] = validated
+				modelMap["haiku"] = validated
+			}
 		}
 		if m, ok := cfg.OllamaModels["sonnet"]; ok && m != "" {
-			modelMap[m] = strings.TrimSpace(m)
-			modelMap["sonnet"] = strings.TrimSpace(m)
+			validated := strings.TrimSpace(m)
+			if err := validateModelName(validated); err == nil {
+				modelMap[m] = validated
+				modelMap["sonnet"] = validated
+			}
 		}
 		if m, ok := cfg.OllamaModels["opus"]; ok && m != "" {
-			modelMap[m] = strings.TrimSpace(m)
-			modelMap["opus"] = strings.TrimSpace(m)
+			validated := strings.TrimSpace(m)
+			if err := validateModelName(validated); err == nil {
+				modelMap[m] = validated
+				modelMap["opus"] = validated
+			}
 		}
 	}
 
@@ -1112,6 +1291,8 @@ func formatCustomModels(backend string, cfg *Config) string {
 		models = cfg.OllamaModels
 	case "zai":
 		models = cfg.ZAIModels
+	case "kimi":
+		models = cfg.KimiModels
 	default:
 		return ""
 	}
@@ -1489,6 +1670,20 @@ OLLAMA_API_KEY=
 # OLLAMA_HAIKU_MODEL=llama3.2
 # OLLAMA_SONNET_MODEL=codellama
 # OLLAMA_OPUS_MODEL=llama3.3
+
+# Z.AI Model Configuration (optional - defaults shown below)
+# Set these to use specific GLM model versions instead of the defaults
+# Defaults: glm-4.5-air (haiku), glm-5 (sonnet), glm-5 (opus)
+# ZAI_HAIKU_MODEL=glm-4.5-air
+# ZAI_SONNET_MODEL=glm-5
+# ZAI_OPUS_MODEL=glm-5
+
+# Kimi Model Configuration (optional - defaults shown below)
+# Set these to use specific Kimi model versions instead of the defaults
+# Defaults: kimi-for-coding (all tiers)
+# KIMI_HAIKU_MODEL=kimi-for-coding
+# KIMI_SONNET_MODEL=kimi-for-coding
+# KIMI_OPUS_MODEL=kimi-for-coding
 `
 	if err := os.WriteFile(envFile, []byte(content), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating .env.local: %v\n", err)
@@ -1707,20 +1902,24 @@ func saveSessions(cfg *Config, sessions []*Session) error {
 }
 
 // generateSessionID creates a unique session ID with random component
-func generateSessionID(name string) string {
-	b := make([]byte, 8)
+// generateSessionID creates a unique session ID with random component
+// Fails hard if crypto/rand fails, as this is a security-critical operation
+func generateSessionID(name string) (string, error) {
+	b := make([]byte, 16) // Increased to 16 bytes for more entropy
 	if _, err := rand.Read(b); err != nil {
-		// Use nanosecond timestamp + PID as fallback (still unique, not predictable)
-		return fmt.Sprintf("%s-%d-%d", name, time.Now().UnixNano(), os.Getpid())
+		return "", fmt.Errorf("failed to generate secure random session ID: %w", err)
 	}
-	return fmt.Sprintf("%s-%d-%s", name, time.Now().Unix(), hex.EncodeToString(b))
+	return fmt.Sprintf("%s-%d-%s", name, time.Now().Unix(), hex.EncodeToString(b)), nil
 }
 
 func createSession(cfg *Config, name string) (*Session, error) {
 	sessions := loadSessions(cfg)
 
 	// Generate unique ID with random component to prevent collisions
-	sessionID := generateSessionID(name)
+	sessionID, err := generateSessionID(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate session ID: %w", err)
+	}
 
 	session := Session{
 		ID:          sessionID,
@@ -2259,8 +2458,10 @@ func checkBackendHealth(cfg *Config, be Backend) HealthResult {
 		return HealthResult{Backend: be.Name, Status: "ok", Latency: latency, Message: "Connection verified"}
 	}
 
+	// Read body for error details but sanitize to prevent API key exposure
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return HealthResult{Backend: be.Name, Status: "error", Latency: latency, Message: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 50))}
+	errMsg := sanitizeError(fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))).Error()
+	return HealthResult{Backend: be.Name, Status: "error", Latency: latency, Message: truncate(errMsg, 100)}
 }
 
 func handleSessionCommand(args []string) {
@@ -2526,7 +2727,7 @@ func cleanupSessions() {
 	sessions := loadSessions(cfg)
 
 	// Remove sessions closed for more than 30 days
-	cutoff := time.Now().AddDate(0, 0, -30)
+	cutoff := time.Now().AddDate(0, 0, -sessionCleanupDays)
 	var kept []*Session
 	removed := 0
 
@@ -2713,7 +2914,10 @@ func fetchKimiUsage(apiKey string) UsageInfo {
 	usage := UsageInfo{Backend: "kimi", Period: "current billing period"}
 
 	// Kimi API usage endpoint
-	req, err := http.NewRequest("GET", "https://api.kimi.com/coding/usage", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), httpClientTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.kimi.com/coding/usage", nil)
 	if err != nil {
 		usage.Error = "N/A"
 		return usage
@@ -2721,7 +2925,7 @@ func fetchKimiUsage(apiKey string) UsageInfo {
 
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: httpClientTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		usage.Error = "N/A"
@@ -2750,7 +2954,7 @@ func fetchKimiUsage(apiKey string) UsageInfo {
 		} `json:"data"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&result); err != nil {
 		usage.Error = "N/A"
 		return usage
 	}
@@ -2769,7 +2973,10 @@ func fetchOpenAICompatibleUsage(be Backend, apiKey string) UsageInfo {
 
 	// Generic handler for OpenAI-compatible APIs
 	url := be.BaseURL + "/usage"
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), httpClientTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		usage.Error = err.Error()
 		return usage
@@ -2777,7 +2984,7 @@ func fetchOpenAICompatibleUsage(be Backend, apiKey string) UsageInfo {
 
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: httpClientTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		usage.Error = err.Error()
@@ -2792,7 +2999,7 @@ func fetchOpenAICompatibleUsage(be Backend, apiKey string) UsageInfo {
 
 	// Generic parsing - try common field names
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&result); err != nil {
 		usage.Error = err.Error()
 		return usage
 	}
@@ -2842,13 +3049,11 @@ func displayUsageDetail(u UsageInfo) {
 
 	be := backends[u.Backend]
 
-	infoStyle := lipgloss.NewStyle().Width(15).Foreground(colorSubtle)
 	fmt.Printf("%s: ", be.DisplayName)
 	fmt.Printf("%s tokens, ", formatNumber(u.TotalTokens))
 	fmt.Printf("%s requests, ", formatNumberInt(u.RequestCount))
 	fmt.Printf("cost: %s\n", styleAccent.Render(formatCurrency(u.TotalCost)))
 
-	_ = infoStyle // Suppress unused variable warning
 }
 
 func displayUsageError(u UsageInfo) {
