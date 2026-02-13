@@ -1,6 +1,6 @@
 # PromptOps - AI Model Backend Switcher
 BINARY=promptops
-VERSION=2.5.1
+VERSION=2.5.2
 
 # Build directories
 BUILD_DIR=build
