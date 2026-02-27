@@ -101,6 +101,9 @@ var allowedEnvVars = map[string]bool{
 	"KIMI_HAIKU_MODEL":    true,
 	"KIMI_SONNET_MODEL":   true,
 	"KIMI_OPUS_MODEL":     true,
+	"GROK_HAIKU_MODEL":    true,
+	"GROK_SONNET_MODEL":   true,
+	"GROK_OPUS_MODEL":     true,
 	// Additional sensitive variables to filter out (never pass to child processes)
 	"AWS_SECRET_ACCESS_KEY": true,
 	"AWS_ACCESS_KEY_ID":     true,
@@ -424,6 +427,21 @@ var backends = map[string]Backend{
 		OutputPrice: 10.00,
 		CodingTier:  "A",
 	},
+	"grok": {
+		Name:        "grok",
+		DisplayName: "Grok",
+		Provider:    "xAI",
+		Models:      "Grok 4.1 Fast / Grok 4",
+		AuthVar:     "GROK_API_KEY",
+		BaseURL:     "https://api.x.ai",
+		Timeout:     defaultTimeout,
+		HaikuModel:  "grok-4-1-fast-non-reasoning",
+		SonnetModel: "grok-code-fast-1",
+		OpusModel:   "grok-4-0709",
+		InputPrice:  0.20,
+		OutputPrice: 1.50,
+		CodingTier:  "A",
+	},
 	"ollama": {
 		Name:        "ollama",
 		DisplayName: "Ollama",
@@ -464,6 +482,8 @@ type Config struct {
 	ZAIModels map[string]string // haiku/sonnet/opus -> model name
 	// Kimi model configuration (allows user to specify Kimi model versions)
 	KimiModels map[string]string // haiku/sonnet/opus -> model name
+	// Grok model configuration (allows user to specify xAI model versions)
+	GrokModels map[string]string // haiku/sonnet/opus -> model name
 }
 
 // UsageRecord represents a single API usage entry
@@ -508,7 +528,7 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter", "openai", "ollama":
+	case "claude", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "grok", "together", "openrouter", "openai", "ollama":
 		switchBackend(cmd, args)
 	case "status", "current":
 		showStatus()
@@ -620,6 +640,7 @@ func loadConfig() *Config {
 		OllamaModels:   make(map[string]string),
 		ZAIModels:      make(map[string]string),
 		KimiModels:     make(map[string]string),
+		GrokModels:     make(map[string]string),
 		DefaultBackend: "claude",
 		VerifyOnSwitch: true,
 		AuditEnabled:   true,
@@ -668,6 +689,8 @@ func loadConfig() *Config {
 				cfg.YoloModes["openrouter"] = value == "true"
 			case "NEXUS_YOLO_MODE_OPENAI":
 				cfg.YoloModes["openai"] = value == "true"
+			case "NEXUS_YOLO_MODE_GROK":
+				cfg.YoloModes["grok"] = value == "true"
 			case "NEXUS_YOLO_MODE_OLLAMA":
 				cfg.YoloModes["ollama"] = value == "true"
 			case "NEXUS_DEFAULT_BACKEND":
@@ -694,7 +717,7 @@ func loadConfig() *Config {
 				} else {
 					fmt.Fprintf(os.Stderr, "Warning: invalid NEXUS_MONTHLY_BUDGET value '%s': %v\n", value, err)
 				}
-			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY":
+			case "ANTHROPIC_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GROK_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY":
 				cfg.Keys[key] = value
 			// Ollama model configuration - allow custom local models
 			case "OLLAMA_HAIKU_MODEL":
@@ -717,6 +740,13 @@ func loadConfig() *Config {
 				cfg.KimiModels["sonnet"] = value
 			case "KIMI_OPUS_MODEL":
 				cfg.KimiModels["opus"] = value
+			// Grok model configuration - allow custom xAI model versions
+			case "GROK_HAIKU_MODEL":
+				cfg.GrokModels["haiku"] = value
+			case "GROK_SONNET_MODEL":
+				cfg.GrokModels["sonnet"] = value
+			case "GROK_OPUS_MODEL":
+				cfg.GrokModels["opus"] = value
 			}
 		}
 	}
@@ -950,6 +980,13 @@ func printLogo(backend string) {
 		fmt.Println("  ██    ██ ██    ██ ██       ██       ██       ██")
 		fmt.Println("   ██████   ██████  ███████  ███████  ███████  ██")
 		fmt.Println("  OPENAI - GPT-4o / GPT-4o-mini / o1")
+	case "grok":
+		fmt.Println("   ██████  ██████   ██████  ██   ██")
+		fmt.Println("  ██       ██   ██ ██    ██ ██  ██")
+		fmt.Println("  ██   ███ ██████  ██    ██ █████")
+		fmt.Println("  ██    ██ ██   ██ ██    ██ ██  ██")
+		fmt.Println("   ██████  ██   ██  ██████  ██   ██")
+		fmt.Println("  xAI - GROK CODE FAST")
 	case "ollama":
 		fmt.Println("   ██████  ██      ██       █████  ███    ███  █████")
 		fmt.Println("  ██    ██ ██      ██      ██   ██ ████  ████ ██   ██")
@@ -1160,6 +1197,18 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 			}
 		}
 
+		if be.Name == "grok" {
+			if m, ok := cfg.GrokModels["haiku"]; ok && m != "" {
+				haikuModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.GrokModels["sonnet"]; ok && m != "" {
+				sonnetModel = strings.TrimSpace(m)
+			}
+			if m, ok := cfg.GrokModels["opus"]; ok && m != "" {
+				opusModel = strings.TrimSpace(m)
+			}
+		}
+
 		// Validate model names before setting environment variables
 		if err := validateModelName(haikuModel); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid haiku model name: %v\n", err)
@@ -1177,6 +1226,21 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_HAIKU_MODEL=%s", haikuModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_SONNET_MODEL=%s", sonnetModel))
 		env = append(env, fmt.Sprintf("ANTHROPIC_DEFAULT_OPUS_MODEL=%s", opusModel))
+	}
+
+	// For Grok, start a proxy to patch Claude Code requests for xAI compatibility
+	var grokProxy *GrokProxy
+	if be.Name == "grok" {
+		apiKey := cfg.Keys[be.AuthVar]
+		grokProxy = NewGrokProxy(be.BaseURL, apiKey)
+		if err := grokProxy.Start(18081); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting Grok proxy: %v\n", err)
+			os.Exit(1)
+		}
+		baseURL = "http://localhost:18081"
+		if !yolo {
+			fmt.Println("[OK] Started xAI compatibility proxy on port 18081")
+		}
 	}
 
 	// For Ollama, start a proxy to translate Anthropic API to OpenAI format
@@ -1204,7 +1268,10 @@ func launchClaudeWithBackend(cfg *Config, be Backend, args []string) {
 
 	err := cmd.Run()
 
-	// Stop the proxy if it was started
+	// Stop proxies if started
+	if grokProxy != nil {
+		grokProxy.Stop()
+	}
 	if proxy != nil {
 		proxy.Stop()
 	}
@@ -1293,6 +1360,8 @@ func formatCustomModels(backend string, cfg *Config) string {
 		models = cfg.ZAIModels
 	case "kimi":
 		models = cfg.KimiModels
+	case "grok":
+		models = cfg.GrokModels
 	default:
 		return ""
 	}
@@ -1371,7 +1440,7 @@ func showStatus() {
 	fmt.Println()
 	fmt.Println(styleSection.Render("AVAILABLE BACKENDS"))
 
-	backendOrder := []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter", "ollama"}
+	backendOrder := []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "grok", "groq", "together", "openrouter", "ollama"}
 
 	rows := [][]string{}
 	for _, name := range backendOrder {
@@ -1733,6 +1802,7 @@ func showHelp() {
 	fmt.Println("    deepseek                Switch to DeepSeek (V3/R1) and launch")
 	fmt.Println("    gemini                  Switch to Gemini (Google) and launch")
 	fmt.Println("    mistral                 Switch to Mistral (Large/Codestral) and launch")
+	fmt.Println("    grok                    Switch to Grok (xAI Code) and launch")
 	fmt.Println()
 	fmt.Println("  Tier 2 Backends:")
 	fmt.Println("    groq                    Switch to Groq (Llama) and launch")
@@ -2310,7 +2380,7 @@ func runDoctor() {
 	fmt.Println()
 
 	rows := [][]string{}
-	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "groq", "together", "openrouter", "ollama"} {
+	for _, name := range []string{"claude", "openai", "deepseek", "gemini", "mistral", "zai", "kimi", "grok", "groq", "together", "openrouter", "ollama"} {
 		be, ok := backends[name]
 		if !ok {
 			continue // Skip unknown backends (defensive)
@@ -2795,7 +2865,7 @@ func showAPIUsage(args []string) {
 	fmt.Println()
 
 	var usages []UsageInfo
-	for _, name := range []string{"claude", "openai", "zai", "kimi", "deepseek", "gemini", "mistral", "groq", "together", "openrouter"} {
+	for _, name := range []string{"claude", "openai", "zai", "kimi", "deepseek", "gemini", "mistral", "grok", "groq", "together", "openrouter"} {
 		be, ok := backends[name]
 		if !ok {
 			continue
